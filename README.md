@@ -286,11 +286,6 @@ The Gateway stores user utterances, assistant responses, actual provider/model m
 - [Dashboard](dashboard-next/README.md)
 - [Firmware](firmware/README.md)
 - [Display and touch](firmware/DISPLAY_CONFIG.md)
-- [Dom AI architecture](docs/DOM_AI_ARCHITECTURE.md)
-- [Phase 1 — Hardware](docs/PHASE1.md)
-- [Phase 2 — Services and apps](docs/PHASE2.md)
-- [Phase 3 — Voice assistant](docs/PHASE3.md)
-- [Wallpaper troubleshooting](docs/WALLPAPER_TROUBLESHOOTING.md)
 
 ---
 
@@ -592,8 +587,3 @@ Gateway lưu câu người dùng, câu trả lời, model, thời gian và trace
 - [Dashboard](dashboard-next/README.md)
 - [Firmware](firmware/README.md)
 - [Display và touch](firmware/DISPLAY_CONFIG.md)
-- [Kiến trúc Dom AI](docs/DOM_AI_ARCHITECTURE.md)
-- [Phase 1 — Hardware](docs/PHASE1.md)
-- [Phase 2 — Services và apps](docs/PHASE2.md)
-- [Phase 3 — Voice assistant](docs/PHASE3.md)
-- [Wallpaper troubleshooting](docs/WALLPAPER_TROUBLESHOOTING.md)

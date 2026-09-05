@@ -26,6 +26,8 @@ __pycache__/
 # Runtime data, downloaded dependencies, and generated user content
 .runtime-logs/
 .runtime-research/
+# Detailed design notes are kept only in the local workspace.
+/docs/
 backend-go/uploads/
 backend-python/data/manchester_united_schedule.json
 backend-python/data/manchester_united_background*.jpg
