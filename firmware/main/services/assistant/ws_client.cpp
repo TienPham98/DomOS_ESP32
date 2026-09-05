@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdio>
 
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_websocket_client.h"
@@ -32,6 +33,9 @@ bool WsClient::Connect(const WsClientConfig &cfg)
     ws_cfg.task_stack           = 4096;
     ws_cfg.reconnect_timeout_ms = cfg.reconnect_ms > 0 ? cfg.reconnect_ms : 3000;
     ws_cfg.network_timeout_ms   = 10000;
+    if (strncmp(cfg.uri, "wss://", 6) == 0) {
+        ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
 
     // HTTP headers: Authorization, Protocol-Version, Device-Id, Client-Id
     // Format: "Key: Value\r\nKey: Value\r\n"

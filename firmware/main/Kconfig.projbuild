@@ -23,6 +23,18 @@ config DOMOS_MQTT_URI
     help
         Set from the private root .env before building.
 
+config DOMOS_MQTT_USERNAME
+    string "MQTT broker username"
+    default ""
+    help
+        Optional MQTT username. Set from the private environment at build time.
+
+config DOMOS_MQTT_PASSWORD
+    string "MQTT broker password"
+    default ""
+    help
+        Optional MQTT password. Set from the private environment at build time.
+
 config DOMOS_DASHBOARD_URL
     string "DomOS Dashboard URL"
     default ""

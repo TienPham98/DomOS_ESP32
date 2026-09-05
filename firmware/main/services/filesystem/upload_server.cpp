@@ -7,6 +7,7 @@
 
 #include <sys/stat.h>
 #include "app/launcher/app_manager.h"
+#include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "services/wifi/wifi_service.h"
@@ -258,12 +259,15 @@ esp_err_t StatusHandler(httpd_req_t *request)
     const unsigned free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     const unsigned min_free_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     const unsigned free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    char response[384];
+    const esp_app_desc_t *app = esp_app_get_description();
+    char response[512];
     std::snprintf(response, sizeof(response),
                   "{\"id\":\"es3c28p-01\",\"name\":\"ES3C28P Desk Terminal\",\"board\":\"ES3C28P\",\"mac\":\"B8:1F:3F:C3:97:54\","
-                  "\"firmware\":\"0.3.5\",\"online\":true,\"wifi\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d},"
+                  "\"firmware\":\"0.3.5\",\"firmware_build\":\"%s %s %s\","
+                  "\"online\":true,\"wifi\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d},"
                   "\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u,"
                   "\"storage_used\":40960,\"storage_total\":7340032}",
+                  app->version, app->date, app->time,
                   wifi->Ssid(), wifi->IpAddress(), wifi->Rssi(), free_heap,
                   min_free_heap, free_psram);
     httpd_resp_set_type(request, "application/json");

@@ -91,6 +91,25 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertNotIn("Rejected SSID", wifi)
         self.assertIn("const esp_err_t connect_result = esp_wifi_connect()", wifi)
 
+    def test_cloud_connections_verify_tls_and_use_psram(self):
+        defaults = read("sdkconfig.defaults")
+        self.assertIn("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y", defaults)
+        self.assertIn("CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y", defaults)
+        for path in ("app/launcher/app_manager.cpp", "services/mqtt/mqtt_service.cpp",
+                     "services/assistant/ws_client.cpp"):
+            with self.subTest(path=path):
+                source = read(f"main/{path}")
+                self.assertIn("esp_crt_bundle_attach", source)
+                self.assertNotIn("skip_cert_common_name_check = true", source)
+        mqtt = read("main/services/mqtt/mqtt_service.cpp")
+        self.assertIn("CONFIG_DOMOS_MQTT_USERNAME", mqtt)
+        self.assertIn("CONFIG_DOMOS_MQTT_PASSWORD", mqtt)
+
+    def test_status_reports_actual_firmware_build(self):
+        server = read("main/services/filesystem/upload_server.cpp")
+        self.assertIn("esp_app_get_description()", server)
+        self.assertIn("firmware_build", server)
+
     def test_wifi_config_accepts_arbitrary_ssid_and_keeps_keyboard_open(self):
         manager = read("main/app/launcher/app_manager.cpp")
         server = read("main/services/filesystem/upload_server.cpp")

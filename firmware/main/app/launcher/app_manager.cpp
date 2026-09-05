@@ -10,6 +10,7 @@
 
 #include "app/i_app.h"
 #include "board/es3c28p/board_es3c28p.h"
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -802,12 +803,12 @@ static bool DownloadUrlToFile(const std::string &url, const char *dest_path)
     http_cfg.timeout_ms = 10000;
     http_cfg.buffer_size = 1024;
     http_cfg.buffer_size_tx = 512;
+    http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
     if (client == nullptr) {
-        AddSystemLog("ERROR", "http", "Client init failed for %s (internal=%u, psram=%u)",
-                     url.c_str(),
+        AddSystemLog("ERROR", "http", "Client init failed (internal=%u, psram=%u): %s",
                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)), dest_path);
         return false;
     }
 
@@ -829,19 +830,19 @@ static bool DownloadUrlToFile(const std::string &url, const char *dest_path)
                 std::fclose(fp);
                 ok = (total > 0);
                 if (ok) {
-                    AddSystemLog("INFO", "http", "Downloaded %d bytes from %s to %s", total, url.c_str(), dest_path);
+                    AddSystemLog("INFO", "http", "Downloaded %d bytes: %s", total, dest_path);
                 } else {
-                    AddSystemLog("WARN", "http", "Downloaded 0 bytes from %s", url.c_str());
+                    AddSystemLog("WARN", "http", "Downloaded 0 bytes: %s", dest_path);
                 }
             } else {
                 AddSystemLog("ERROR", "http", "Failed to open dest_path for write: %s", dest_path);
             }
         } else {
-            AddSystemLog("ERROR", "http", "HTTP GET %s returned status=%d length=%d",
-                         url.c_str(), status_code, content_len);
+            AddSystemLog("ERROR", "http", "HTTP status=%d length=%d: %s",
+                         status_code, content_len, dest_path);
         }
     } else {
-        AddSystemLog("ERROR", "http", "Failed HTTP GET: %s (err=%s)", url.c_str(), esp_err_to_name(err));
+        AddSystemLog("ERROR", "http", "HTTP GET failed (%s): %s", esp_err_to_name(err), dest_path);
     }
     esp_http_client_cleanup(client);
     return ok;

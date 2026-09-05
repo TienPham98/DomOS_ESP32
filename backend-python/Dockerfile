@@ -20,5 +20,6 @@ RUN chmod +x /app/cloud-entrypoint.sh \
 
 EXPOSE 8000
 EXPOSE 1883/tcp
+EXPOSE 9001
 
 ENTRYPOINT ["/app/cloud-entrypoint.sh"]

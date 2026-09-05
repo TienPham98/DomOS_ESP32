@@ -1,5 +1,8 @@
 #include "mqtt_service.h"
 
+#include <cstring>
+
+#include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "kernel/event_bus.h"
@@ -19,7 +22,16 @@ bool MqttService::Start(EventBus *events)
     }
     esp_mqtt_client_config_t config{};
     config.broker.address.uri = uri;
+    if (std::strncmp(uri, "mqtts://", 8) == 0 || std::strncmp(uri, "wss://", 6) == 0) {
+        config.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     config.credentials.client_id = "domos-es3c28p-01";
+    if (CONFIG_DOMOS_MQTT_USERNAME[0] != '\0') {
+        config.credentials.username = CONFIG_DOMOS_MQTT_USERNAME;
+    }
+    if (CONFIG_DOMOS_MQTT_PASSWORD[0] != '\0') {
+        config.credentials.authentication.password = CONFIG_DOMOS_MQTT_PASSWORD;
+    }
     client_ = esp_mqtt_client_init(&config);
     if (client_ == nullptr) return false;
     esp_mqtt_client_register_event(static_cast<esp_mqtt_client_handle_t>(client_), MQTT_EVENT_ANY,

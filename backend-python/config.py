@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     CODEX_USAGE_STALE_SECONDS: int = 900
     CODEX_USAGE_COLLECT_TIMEOUT_SECONDS: float = 10.0
     CODEX_USAGE_SYNC_TOKEN: str = ""
+    CODEX_USAGE_SYNC_URL: str = ""
 
     # Manchester United schedule. Provider credentials and URLs stay in .env.
     FOOTBALL_DATA_API_KEY: str = ""

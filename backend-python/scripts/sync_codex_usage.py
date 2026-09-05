@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 from pathlib import Path
 import sys
 
@@ -15,23 +14,31 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
 from services.codex_usage_service import codex_usage_service  # noqa: E402
+from config import settings  # noqa: E402
 
 
-async def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--url",
-        default=os.getenv("CODEX_USAGE_SYNC_URL", "http://127.0.0.1:8000"),
+        default=settings.CODEX_USAGE_SYNC_URL,
         help="DomOS Python gateway base URL",
     )
     parser.add_argument(
         "--token",
-        default=os.getenv("CODEX_USAGE_SYNC_TOKEN", ""),
+        default=settings.CODEX_USAGE_SYNC_TOKEN,
         help="Bearer token configured on the gateway",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if not args.url:
+        raise SystemExit("CODEX_USAGE_SYNC_URL is required (.env or --url)")
     if not args.token:
         raise SystemExit("CODEX_USAGE_SYNC_TOKEN is required")
+    return args
+
+
+async def main() -> None:
+    args = parse_args()
 
     snapshot = await codex_usage_service.collect_local()
     async with httpx.AsyncClient(timeout=15) as client:
