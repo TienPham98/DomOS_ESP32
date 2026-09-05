@@ -95,6 +95,9 @@ class IntegrationContractTests(unittest.TestCase):
         defaults = read("sdkconfig.defaults")
         self.assertIn("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y", defaults)
         self.assertIn("CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y", defaults)
+        manager = read("main/app/launcher/app_manager.cpp")
+        self.assertIn("kWidgetFetchStackBytes = 8192", manager)
+        self.assertIn("uxTaskGetStackHighWaterMark(nullptr)", manager)
         for path in ("app/launcher/app_manager.cpp", "services/mqtt/mqtt_service.cpp",
                      "services/assistant/ws_client.cpp"):
             with self.subTest(path=path):
@@ -109,6 +112,13 @@ class IntegrationContractTests(unittest.TestCase):
         server = read("main/services/filesystem/upload_server.cpp")
         self.assertIn("esp_app_get_description()", server)
         self.assertIn("firmware_build", server)
+
+    def test_voice_reconnects_when_cloud_closes_socket_for_deployment(self):
+        source = read("main/services/assistant/ws_client.cpp")
+        self.assertIn("ws_cfg.enable_close_reconnect = true", source)
+        self.assertRegex(source, r"case WEBSOCKET_EVENT_DISCONNECTED:\s*"
+                                r"case WEBSOCKET_EVENT_CLOSED:\s*"
+                                r"self->connected_\.store\(false\)")
 
     def test_wifi_config_accepts_arbitrary_ssid_and_keeps_keyboard_open(self):
         manager = read("main/app/launcher/app_manager.cpp")
@@ -164,7 +174,7 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertIn('"/api/football/manchester-united/background.jpg"', manager)
         self.assertRegex(
             manager,
-            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"manutd_fetch",\s*4096,\s*context,\s*3,\s*nullptr,\s*0\)',
+            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"manutd_fetch",\s*kWidgetFetchStackBytes,\s*context,\s*3,\s*nullptr,\s*0\)',
         )
         self.assertNotRegex(manager, r'xTaskCreatePinnedToCoreWithCaps\([^;]*"manutd_fetch"')
         self.assertIn("60U * 60U * 1000U", manager)
@@ -186,7 +196,7 @@ class IntegrationContractTests(unittest.TestCase):
         )
         self.assertRegex(
             manager,
-            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"codex_fetch",\s*4096,\s*context,\s*3,\s*nullptr,\s*0\)',
+            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"codex_fetch",\s*kWidgetFetchStackBytes,\s*context,\s*3,\s*nullptr,\s*0\)',
         )
         self.assertNotRegex(manager, r'xTaskCreatePinnedToCoreWithCaps\([^;]*"codex_fetch"')
         self.assertIn("60U * 1000U", manager)

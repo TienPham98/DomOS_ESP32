@@ -32,6 +32,9 @@ bool WsClient::Connect(const WsClientConfig &cfg)
     ws_cfg.buffer_size          = 2048;  // One 1920-byte / 60 ms PCM frame plus WS header
     ws_cfg.task_stack           = 4096;
     ws_cfg.reconnect_timeout_ms = cfg.reconnect_ms > 0 ? cfg.reconnect_ms : 3000;
+    // A cloud rolling deployment closes sockets cleanly (e.g. code 1012),
+    // which otherwise stops the client instead of entering its retry loop.
+    ws_cfg.enable_close_reconnect = true;
     ws_cfg.network_timeout_ms   = 10000;
     if (strncmp(cfg.uri, "wss://", 6) == 0) {
         ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
@@ -142,6 +145,7 @@ void WsClient::WsEventHandler(void *handler_args, esp_event_base_t /*base*/,
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
+    case WEBSOCKET_EVENT_CLOSED:
         self->connected_.store(false);
         ESP_LOGW(TAG, "Disconnected");
         if (self->event_cb_) self->event_cb_(false);

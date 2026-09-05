@@ -39,6 +39,9 @@ struct AppLaunchRequest {
 // Voice remains resident. Only one widget HTTP/LittleFS worker may consume
 // another internal-RAM stack at a time; the other app retries on its UI timer.
 std::atomic<bool> s_widget_fetch_busy{false};
+// HTTPS certificate verification overflows the old 4 KiB HTTP-only stack.
+// Widget downloads are serialized, so only one such internal stack is live.
+constexpr uint32_t kWidgetFetchStackBytes = 8192;
 
 struct PendingMqttCommand {
     AppManager *manager;
@@ -1292,7 +1295,7 @@ private:
         // This task writes LittleFS. Its stack must remain in internal RAM
         // because SPI flash operations temporarily disable the PSRAM cache.
         if (xTaskCreatePinnedToCore(
-                FetchTask, "manutd_fetch", 4096, context, 3, nullptr, 0) != pdPASS) {
+                FetchTask, "manutd_fetch", kWidgetFetchStackBytes, context, 3, nullptr, 0) != pdPASS) {
             delete context;
             s_widget_fetch_busy = false;
             refresh_running_ = false;
@@ -1335,6 +1338,9 @@ private:
             }
         }
 
+        AddSystemLog(schedule_ok ? "INFO" : "WARN", "man-utd",
+                     "Refresh %s (stack free=%u)", schedule_ok ? "OK" : "failed",
+                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
         auto *result = new FetchResult{app, schedule_ok};
         if (lv_async_call([](void *value) {
                 auto *completed = static_cast<FetchResult *>(value);
@@ -1555,7 +1561,7 @@ private:
         // This task writes LittleFS. Its stack must remain in internal RAM
         // because SPI flash operations temporarily disable the PSRAM cache.
         if (xTaskCreatePinnedToCore(
-                FetchTask, "codex_fetch", 4096, context, 3, nullptr, 0) != pdPASS) {
+                FetchTask, "codex_fetch", kWidgetFetchStackBytes, context, 3, nullptr, 0) != pdPASS) {
             delete context;
             s_widget_fetch_busy = false;
             refresh_running_ = false;
@@ -1584,6 +1590,9 @@ private:
             std::remove(kUsageTempPath);
         }
 
+        AddSystemLog(ok ? "INFO" : "WARN", "codex",
+                     "Refresh %s (stack free=%u)", ok ? "OK" : "failed",
+                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
         auto *result = new FetchResult{app, ok};
         if (lv_async_call([](void *value) {
                 auto *completed = static_cast<FetchResult *>(value);

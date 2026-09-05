@@ -10,6 +10,7 @@
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "services/wifi/wifi_service.h"
 
 namespace {
@@ -265,11 +266,12 @@ esp_err_t StatusHandler(httpd_req_t *request)
                   "{\"id\":\"es3c28p-01\",\"name\":\"ES3C28P Desk Terminal\",\"board\":\"ES3C28P\",\"mac\":\"B8:1F:3F:C3:97:54\","
                   "\"firmware\":\"0.3.5\",\"firmware_build\":\"%s %s %s\","
                   "\"online\":true,\"wifi\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d},"
-                  "\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u,"
+                  "\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u,\"uptime_ms\":%llu,"
                   "\"storage_used\":40960,\"storage_total\":7340032}",
                   app->version, app->date, app->time,
                   wifi->Ssid(), wifi->IpAddress(), wifi->Rssi(), free_heap,
-                  min_free_heap, free_psram);
+                  min_free_heap, free_psram,
+                  static_cast<unsigned long long>(esp_timer_get_time() / 1000));
     httpd_resp_set_type(request, "application/json");
     httpd_resp_sendstr(request, response);
     return ESP_OK;
