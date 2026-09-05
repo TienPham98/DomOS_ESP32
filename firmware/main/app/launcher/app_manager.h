@@ -54,6 +54,7 @@ private:
     AppEntry apps_[kMaxApps]{};
     size_t app_count_ = 0;
     IApp *current_ = nullptr;
+    void *launch_queue_ = nullptr;
     ES3C28PBoard *board_ = nullptr;
     WifiService *wifi_ = nullptr;
     MqttService *mqtt_ = nullptr;

@@ -17,12 +17,12 @@ async def main() -> None:
     ) as websocket:
         await websocket.send(json.dumps({"type": "hello", "version": 3, "audio_params": {"codec": "pcm", "sample_rate": 16000, "channels": 1, "frame_duration": 60}}))
         hello = json.loads(await asyncio.wait_for(websocket.recv(), timeout=5))
-    assert health["provider"] == "openrouter"
+    assert health["provider"] == "openai"
     assert health["local_ai"] is False
     assert health["api_key_configured"] is True
-    assert hello["provider"] == "openrouter"
+    assert hello["provider"] == "openai"
     assert isinstance(history["items"], list)
-    print("RUNTIME_SMOKE_OK: OpenRouter gateway, memory API and voice handshake")
+    print("RUNTIME_SMOKE_OK: OpenAI-first gateway, memory API and voice handshake")
 
 
 if __name__ == "__main__":

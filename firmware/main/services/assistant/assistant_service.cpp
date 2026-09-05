@@ -99,7 +99,8 @@ void AssistantService::NotifyUi()
 
 void AssistantService::OpenAudioChannel()
 {
-    if (GetState() != AssistantState::Idle) {
+    std::lock_guard<std::mutex> channel_lock(channel_mutex_);
+    if (ws_.IsStarted() || GetState() != AssistantState::Idle) {
         ESP_LOGW(TAG, "OpenAudioChannel: already active (state=%d)", (int)GetState());
         return;
     }
@@ -153,6 +154,7 @@ void AssistantService::OpenAudioChannel()
 
 void AssistantService::CloseAudioChannel()
 {
+    std::lock_guard<std::mutex> channel_lock(channel_mutex_);
     if (GetState() == AssistantState::Listening) {
         SendListenStop();
     }
@@ -384,6 +386,21 @@ void AssistantService::HandleListen(const char *json)
     if (!root) return;
     cJSON *state_j = cJSON_GetObjectItemCaseSensitive(root, "state");
     const char *listen_state = cJSON_IsString(state_j) ? state_j->valuestring : "";
+    cJSON *source_j = cJSON_GetObjectItemCaseSensitive(root, "source");
+    const bool from_wake_word = cJSON_IsString(source_j) &&
+        strcmp(source_j->valuestring, "wake_word") == 0;
+    // Older gateways omit source. Armed -> active is their wake notification;
+    // manual taps already moved the device to Listening before their reply.
+    const bool legacy_wake = source_j == nullptr && GetState() == AssistantState::Armed;
+    const bool wake_activation = (from_wake_word || legacy_wake) &&
+        (strcmp(listen_state, "start") == 0 || strcmp(listen_state, "processing") == 0);
+    if (wake_activation && events_) {
+        // Wake activation and subsequent app.launch requests share one FIFO.
+        // Never foreground Assistant on ordinary TTS/state updates.
+        if (!events_->Publish(EventType::AppLaunchRequested, TAG, "assistant")) {
+            ESP_LOGW(TAG, "Wake activation queue is full");
+        }
+    }
     if (strcmp(listen_state, "wake") == 0) {
         SetState(AssistantState::Armed);
         std::lock_guard<std::mutex> lock(mutex_);
@@ -602,6 +619,8 @@ void AssistantService::HandleMcp(const char *json)
                 cJSON *app_enum = cJSON_AddArrayToObject(app_name, "enum");
                 cJSON_AddItemToArray(app_enum, cJSON_CreateString("wallpaper"));
                 cJSON_AddItemToArray(app_enum, cJSON_CreateString("clock"));
+                cJSON_AddItemToArray(app_enum, cJSON_CreateString("man-utd"));
+                cJSON_AddItemToArray(app_enum, cJSON_CreateString("codex-credit"));
                 cJSON *launch_required = cJSON_AddArrayToObject(launch_schema, "required");
                 cJSON_AddItemToArray(launch_required, cJSON_CreateString("app"));
                 cJSON_AddItemToArray(tools, launch_tool);
@@ -669,15 +688,20 @@ void AssistantService::HandleMcp(const char *json)
                 } else if (strcmp(name, "app.launch") == 0) {
                     cJSON *app_j = args ? cJSON_GetObjectItemCaseSensitive(args, "app") : nullptr;
                     const char *app = cJSON_IsString(app_j) ? app_j->valuestring : "";
-                    if (strcmp(app, "wallpaper") != 0 && strcmp(app, "clock") != 0) {
-                        SendMcpResult(req_id, "app must be wallpaper or clock", true);
+                    if (strcmp(app, "wallpaper") != 0 && strcmp(app, "clock") != 0 &&
+                        strcmp(app, "man-utd") != 0 && strcmp(app, "codex-credit") != 0) {
+                        SendMcpResult(req_id, "unsupported app", true);
                     } else if (apps_ == nullptr) {
                         SendMcpResult(req_id, "app manager is not ready", true);
                     } else {
-                        apps_->RequestLaunch(app);
-                        char result_text[64];
-                        snprintf(result_text, sizeof(result_text), "launched app %s", app);
-                        SendMcpResult(req_id, result_text);
+                        if (events_ == nullptr ||
+                            !events_->Publish(EventType::AppLaunchRequested, TAG, app)) {
+                            SendMcpResult(req_id, "app launch queue is full", true);
+                        } else {
+                            char result_text[64];
+                            snprintf(result_text, sizeof(result_text), "queued app %s", app);
+                            SendMcpResult(req_id, result_text);
+                        }
                     }
                 } else {
                     SendMcpResult(req_id, "unknown device tool", true);

@@ -37,6 +37,8 @@ public:
     bool Connect(const WsClientConfig &cfg);
     void Disconnect();
     bool IsConnected() const { return connected_.load(); }
+    // A disconnected client still owns its automatic reconnect loop.
+    bool IsStarted() const { return started_.load(); }
 
     bool SendText(const char *json, size_t len = 0);
     bool SendBinary(const uint8_t *data, size_t len);
@@ -51,6 +53,7 @@ private:
 
     void *client_          = nullptr;  // esp_websocket_client_handle_t
     std::atomic<bool> connected_{false};
+    std::atomic<bool> started_{false};
     WsTextCallback   text_cb_;
     WsBinaryCallback binary_cb_;
     WsEventCallback  event_cb_;

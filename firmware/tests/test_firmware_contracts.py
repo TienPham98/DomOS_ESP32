@@ -38,13 +38,66 @@ class BoardContractTests(unittest.TestCase):
 
 
 class IntegrationContractTests(unittest.TestCase):
+    def test_voice_starts_after_wifi_without_opening_assistant_screen(self):
+        main = read("main/main.cpp")
+        startup = main[main.index("void StartNetworkClientsWhenWifiReady"):main.index("} // namespace")]
+        self.assertLess(startup.index("while (!services->wifi->Connected())"),
+                        startup.index("services->assistant->OpenAudioChannel()"))
+        self.assertNotIn('Launch("assistant")', startup)
+        manager = read("main/app/launcher/app_manager.cpp")
+        assistant_app = manager[manager.index("class AssistantApp"):manager.index("class OtaApp")]
+        self.assertNotIn("CloseAudioChannel", assistant_app)
+
+    def test_wake_and_tool_launch_share_event_bus_fifo(self):
+        service = read("main/services/assistant/assistant_service.cpp")
+        listen = service[service.index("void AssistantService::HandleListen"):service.index("void AssistantService::HandleStt")]
+        self.assertIn('strcmp(source_j->valuestring, "wake_word") == 0', listen)
+        self.assertIn('events_->Publish(EventType::AppLaunchRequested, TAG, "assistant")', listen)
+        self.assertIn("events_->Publish(EventType::AppLaunchRequested, TAG, app)", service)
+        self.assertNotIn('apps_->RequestLaunch("assistant")', service)
+        self.assertIn("events.Subscribe(EventType::AppLaunchRequested", read("main/main.cpp"))
+
+    def test_app_launch_queue_does_not_touch_lvgl_from_websocket(self):
+        manager = read("main/app/launcher/app_manager.cpp")
+        request = manager[manager.index("void AppManager::RequestLaunch"):manager.index("void AppManager::CloseCurrent")]
+        self.assertIn("xQueueSend", request)
+        self.assertNotIn("lv_async_call", request)
+        self.assertNotIn("new ", request)
+        self.assertIn("xQueueReceive", manager)
+
+    def test_opening_screen_does_not_recreate_reconnecting_websocket(self):
+        service = read("main/services/assistant/assistant_service.cpp")
+        self.assertIn("ws_.IsStarted() || GetState() != AssistantState::Idle", service)
+        self.assertIn("channel_lock(channel_mutex_)", service)
+
+    def test_widget_fetches_share_internal_ram_budget_with_background_voice(self):
+        self.assertIn("CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y", read("sdkconfig.defaults"))
+        manager = read("main/app/launcher/app_manager.cpp")
+        self.assertIn("std::atomic<bool> s_widget_fetch_busy{false}", manager)
+        self.assertEqual(manager.count("s_widget_fetch_busy.compare_exchange_strong"), 2)
+        self.assertEqual(manager.count("s_widget_fetch_busy = false;"), 4)
+        self.assertEqual(manager.count("deferred_force_ = deferred_force_ || force"), 2)
+        self.assertGreaterEqual(manager.count("lv_timer_set_period(refresh_timer_, 1000)"), 4)
+
     def test_private_network_endpoints_are_injected(self):
         defaults = read("sdkconfig.defaults")
         wifi = read("main/services/wifi/wifi_service.cpp")
         self.assertIn('CONFIG_DOMOS_MQTT_URI=""', defaults)
         self.assertIn('CONFIG_DOMOS_AI_WS_URI=""', defaults)
         self.assertIn("CONFIG_DOMOS_DEVICE_IP", wifi)
-        self.assertIn('std::strncpy(s_ssid, "Dom_12"', wifi)
+        self.assertIn('std::strcmp(ssid, "Dom_12") != 0', wifi)
+        self.assertIn("esp_netif_dhcpc_start(s_netif)", wifi)
+        self.assertIn("stop_wifi_result != ESP_ERR_WIFI_NOT_STARTED", wifi)
+        self.assertNotIn("Rejected SSID", wifi)
+        self.assertIn("const esp_err_t connect_result = esp_wifi_connect()", wifi)
+
+    def test_wifi_config_accepts_arbitrary_ssid_and_keeps_keyboard_open(self):
+        manager = read("main/app/launcher/app_manager.cpp")
+        server = read("main/services/filesystem/upload_server.cpp")
+        self.assertIn("manager_.Wifi()->ConnectTo", manager)
+        self.assertIn("Connection failed (reason %d)", manager)
+        self.assertIn("lv_obj_add_flag(app->kb_, LV_OBJ_FLAG_HIDDEN)", manager)
+        self.assertIn('app = "wifi-setup"', server)
 
     def test_audio_tasks_keep_realtime_core_and_priority_contract(self):
         pipeline = read("main/services/assistant/audio_pipeline.cpp")
@@ -78,6 +131,49 @@ class IntegrationContractTests(unittest.TestCase):
         for route in ("/upload", "/api/status", "/api/logs", "/api/wallpaper"):
             with self.subTest(route=route):
                 self.assertIn(f'.uri = "{route}"', server)
+        self.assertIn("s_apps->RequestLaunch(app)", server)
+        self.assertNotIn("s_apps->Launch(app)", server)
+
+    def test_manchester_united_app_keeps_network_work_off_realtime_tasks(self):
+        manager = read("main/app/launcher/app_manager.cpp")
+        assistant = read("main/services/assistant/assistant_service.cpp")
+        upload_server = read("main/services/filesystem/upload_server.cpp")
+
+        self.assertIn("class ManchesterUnitedApp", manager)
+        self.assertIn('return "man-utd";', manager)
+        self.assertIn('"/api/football/manchester-united"', manager)
+        self.assertIn('"/api/football/manchester-united/background.jpg"', manager)
+        self.assertRegex(
+            manager,
+            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"manutd_fetch",\s*4096,\s*context,\s*3,\s*nullptr,\s*0\)',
+        )
+        self.assertNotRegex(manager, r'xTaskCreatePinnedToCoreWithCaps\([^;]*"manutd_fetch"')
+        self.assertIn("60U * 60U * 1000U", manager)
+        self.assertIn('cJSON_CreateString("man-utd")', assistant)
+        self.assertIn('strcmp(app, "man-utd") != 0', assistant)
+        self.assertIn('app = "man-utd"', upload_server)
+
+    def test_codex_credit_app_uses_gateway_and_background_fetch_task(self):
+        manager = read("main/app/launcher/app_manager.cpp")
+        assistant = read("main/services/assistant/assistant_service.cpp")
+        upload_server = read("main/services/filesystem/upload_server.cpp")
+
+        self.assertIn("class CodexCreditApp", manager)
+        self.assertIn('return "codex-credit";', manager)
+        self.assertIn('"/api/codex/usage"', manager)
+        self.assertRegex(
+            manager,
+            r'percent\s*=\s*Label\(card,\s*"--% LEFT"[\s\S]*?&lv_font_montserrat_14\)',
+        )
+        self.assertRegex(
+            manager,
+            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"codex_fetch",\s*4096,\s*context,\s*3,\s*nullptr,\s*0\)',
+        )
+        self.assertNotRegex(manager, r'xTaskCreatePinnedToCoreWithCaps\([^;]*"codex_fetch"')
+        self.assertIn("60U * 1000U", manager)
+        self.assertIn('cJSON_CreateString("codex-credit")', assistant)
+        self.assertIn('strcmp(app, "codex-credit") != 0', assistant)
+        self.assertIn('app = "codex-credit"', upload_server)
 
 
 if __name__ == "__main__":

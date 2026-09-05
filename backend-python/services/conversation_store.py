@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from services.text_normalization import plain_speech_text
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -64,6 +66,20 @@ class ConversationStore:
                     ON tool_traces(turn_id, created_at);
                 """
             )
+            # One-time/idempotent cleanup keeps legacy Markdown from being
+            # shown on the dashboard or fed back to the next model request.
+            rows = connection.execute(
+                "SELECT id, assistant_text FROM conversation_turns WHERE assistant_text <> ''"
+            ).fetchall()
+            updates = [
+                (cleaned, row["id"])
+                for row in rows
+                if (cleaned := plain_speech_text(row["assistant_text"])) != row["assistant_text"]
+            ]
+            if updates:
+                connection.executemany(
+                    "UPDATE conversation_turns SET assistant_text = ? WHERE id = ?", updates
+                )
 
     async def create_turn(self, device_id: str, user_text: str, provider: str, model: str) -> str:
         turn_id = str(uuid.uuid4())
@@ -76,10 +92,18 @@ class ConversationStore:
         return turn_id
 
     async def complete_turn(self, turn_id: str, assistant_text: str) -> None:
+        assistant_text = plain_speech_text(assistant_text)
         await asyncio.to_thread(
             self._execute,
             "UPDATE conversation_turns SET assistant_text = ?, completed_at = ? WHERE id = ?",
             (assistant_text, _now(), turn_id),
+        )
+
+    async def update_execution(self, turn_id: str, provider: str, model: str) -> None:
+        await asyncio.to_thread(
+            self._execute,
+            "UPDATE conversation_turns SET provider = ?, model = ? WHERE id = ?",
+            (provider, model, turn_id),
         )
 
     async def add_tool_trace(
@@ -122,7 +146,7 @@ class ConversationStore:
         for row in reversed(rows):
             messages.extend((
                 {"role": "user", "content": row["user_text"]},
-                {"role": "assistant", "content": row["assistant_text"]},
+                {"role": "assistant", "content": plain_speech_text(row["assistant_text"])},
             ))
         return messages
 
@@ -142,6 +166,7 @@ class ConversationStore:
         with closing(self._connect()) as connection, connection:
             turns = [dict(row) for row in connection.execute(query, params).fetchall()]
             for turn in turns:
+                turn["assistant_text"] = plain_speech_text(turn["assistant_text"])
                 traces = connection.execute(
                     "SELECT * FROM tool_traces WHERE turn_id = ? ORDER BY created_at",
                     (turn["id"],),

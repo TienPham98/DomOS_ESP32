@@ -19,6 +19,7 @@ enum class EventType : uint8_t {
     AssistantProcessing,
     AssistantSpeaking,
     AssistantError,
+    AppLaunchRequested,
 };
 
 struct DomosEvent {

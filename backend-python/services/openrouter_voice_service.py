@@ -27,7 +27,16 @@ from fastapi import WebSocket, WebSocketDisconnect
 from gtts import gTTS
 
 from config import settings
+from services.app_commands import (
+    APP_COMMAND_HELP,
+    APP_CONFIRMATIONS,
+    APP_LAUNCH_FAILED,
+    claims_app_launch,
+    is_unresolved_launch_request,
+    requested_app,
+)
 from services.conversation_store import ConversationStore
+from services.text_normalization import plain_speech_text
 
 logger = logging.getLogger("domos.openrouter")
 
@@ -41,19 +50,30 @@ VAD_SILENCE_FRAMES = 9
 VAD_MIN_SPEECH_FRAMES = 3
 VAD_MAX_FRAMES = 20_000 // PCM_FRAME_MS
 WAKE_MAX_FRAMES = 3_000 // PCM_FRAME_MS
+VAD_CALIBRATION_FRAMES = 5
+VAD_START_FRAMES = 2
+VAD_NOISE_MULTIPLIER = 1.8
+VAD_NOISE_MARGIN = 40
+# Single-word "Hey" / "Dom" can be shorter than the old 300 ms minimum.
+WAKE_MIN_SPEECH_FRAMES = 3
+PROVIDER_RETRY_SECONDS = 300
 
 SYSTEM_PROMPT = """Bạn là Dom, trợ lý giọng nói tiếng Việt của DomOS trên thiết bị ESP32-S3.
-Luôn hiểu và trả lời bằng tiếng Việt tự nhiên, ngắn gọn, thân thiện, phù hợp để đọc thành tiếng.
+Luôn hiểu ý định và trả lời bằng tiếng Việt tự nhiên, ngắn gọn, thân thiện, phù hợp để đọc thành tiếng.
+Tận dụng ngữ cảnh hội thoại để hiểu câu nói tiếp nối; không lặp lại thông tin người dùng vừa nói.
+Trả lời trực tiếp trước, chỉ giải thích thêm khi hữu ích. Nếu thiếu dữ kiện quan trọng, hỏi đúng một câu ngắn.
+Không dùng Markdown, tiêu đề, danh sách ký hiệu, dấu sao hoặc mô tả nội bộ như “đang gọi công cụ”.
 Bạn có thể điều khiển thiết bị bằng các công cụ được cung cấp. Khi người dùng yêu cầu điều khiển,
 phải gọi công cụ phù hợp và chỉ xác nhận thành công sau khi nhận kết quả công cụ. Không bịa kết quả.
-Với lệnh tăng/giảm không nêu mức, dùng delta 10 hoặc -10. Chỉ trả lời nội dung cần nói, không Markdown."""
+Không bịa lịch thi đấu, hạn mức, trạng thái hiện tại hoặc khả năng không có trong công cụ.
+Với lệnh tăng/giảm không nêu mức, dùng delta 10 hoặc -10. Chỉ trả lời nội dung cần nói."""
 
 TOOLS = [
     {"type": "function", "function": {"name": "device.get_status", "description": "Lấy trạng thái trợ lý và âm thanh", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "speaker.set_volume", "description": "Đặt âm lượng loa từ 0 đến 100", "parameters": {"type": "object", "properties": {"volume": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["volume"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "speaker.adjust_volume", "description": "Tăng hoặc giảm âm lượng loa theo delta", "parameters": {"type": "object", "properties": {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}, "required": ["delta"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "display.adjust_brightness", "description": "Tăng hoặc giảm độ sáng màn hình theo delta", "parameters": {"type": "object", "properties": {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}, "required": ["delta"], "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "app.launch", "description": "Mở ứng dụng DomOS", "parameters": {"type": "object", "properties": {"app": {"type": "string", "enum": ["wallpaper", "clock"]}}, "required": ["app"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "app.launch", "description": "Mở ứng dụng DomOS", "parameters": {"type": "object", "properties": {"app": {"type": "string", "enum": ["wallpaper", "clock", "man-utd", "codex-credit"]}}, "required": ["app"], "additionalProperties": False}}},
 ]
 
 
@@ -79,6 +99,20 @@ voice_registry = VoiceRegistry()
 conversation_store = ConversationStore(settings.CONVERSATION_DB_PATH)
 
 
+def primary_llm_provider() -> str:
+    for provider in settings.LLM_PROVIDER_ORDER.split(","):
+        name = provider.strip().lower()
+        if name == "openai" and settings.OPENAI_API_KEY:
+            return "openai"
+        if name == "openrouter" and settings.OPENROUTER_API_KEY:
+            return "openrouter"
+    return "unconfigured"
+
+
+def primary_llm_model() -> str:
+    return settings.OPENAI_MODEL if primary_llm_provider() == "openai" else settings.OPENROUTER_MODEL
+
+
 def validate_dom_hello(message: dict[str, Any]) -> None:
     expected = {"codec": "pcm", "sample_rate": 16_000, "channels": 1, "frame_duration": 60}
     audio = message.get("audio_params")
@@ -96,6 +130,16 @@ def pcm_rms(pcm: bytes) -> int:
     return int(math.sqrt(sum(sample * sample for sample in samples) / len(samples)))
 
 
+def pcm_signal_rms(pcm: bytes) -> int:
+    """Return AC energy, excluding the microphone's DC offset."""
+    samples = array("h")
+    samples.frombytes(pcm[: len(pcm) - len(pcm) % 2])
+    if not samples:
+        return 0
+    mean = sum(samples) / len(samples)
+    return int(math.sqrt(sum((sample - mean) ** 2 for sample in samples) / len(samples)))
+
+
 def pcm_to_wav(pcm: bytes) -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:
@@ -106,12 +150,14 @@ def pcm_to_wav(pcm: bytes) -> bytes:
     return output.getvalue()
 
 
-def normalize_wake_pcm(pcm: bytes, target_peak: int = 12_000) -> bytes:
-    """Raise quiet, short wake phrases to a useful STT level without clipping."""
+def normalize_speech_pcm(pcm: bytes, target_peak: int = 12_000) -> bytes:
+    """Remove DC offset, normalize speech and add context padding for cloud STT."""
     samples = array("h")
     samples.frombytes(pcm[: len(pcm) - len(pcm) % 2])
     if not samples:
         return pcm
+    mean = round(sum(samples) / len(samples))
+    samples = array("h", (sample - mean for sample in samples))
     peak = max(abs(sample) for sample in samples)
     if peak == 0:
         return pcm
@@ -124,6 +170,11 @@ def normalize_wake_pcm(pcm: bytes, target_peak: int = 12_000) -> bytes:
     return padding + samples.tobytes() + padding
 
 
+def normalize_wake_pcm(pcm: bytes, target_peak: int = 12_000) -> bytes:
+    """Backward-compatible wake phrase normalization helper."""
+    return normalize_speech_pcm(pcm, target_peak)
+
+
 def _clean_text(value: Any) -> str:
     if isinstance(value, list):
         value = " ".join(str(part.get("text", "")) for part in value if isinstance(part, dict))
@@ -131,6 +182,52 @@ def _clean_text(value: Any) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"^(bản ghi|transcript|transcription)\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
     return text.strip().strip('"“”')
+
+
+class OpenAIAPIError(RuntimeError):
+    def __init__(self, operation: str, status_code: int, error_type: str,
+                 error_code: str, message: str, request_id: str = "") -> None:
+        super().__init__(
+            f"OpenAI {operation} HTTP {status_code}: "
+            f"{error_type or error_code or 'unknown'}: {message or 'request failed'}"
+        )
+        self.status_code = status_code
+        self.error_type = error_type
+        self.error_code = error_code
+        self.request_id = request_id
+
+
+def _openai_api_error(response: httpx.Response, operation: str) -> OpenAIAPIError:
+    try:
+        error = response.json().get("error") or {}
+    except (ValueError, AttributeError):
+        error = {}
+    return OpenAIAPIError(
+        operation=operation,
+        status_code=response.status_code,
+        error_type=str(error.get("type") or ""),
+        error_code=str(error.get("code") or ""),
+        message=str(error.get("message") or "request failed"),
+        request_id=response.headers.get("x-request-id", ""),
+    )
+
+
+def is_openai_credit_exhausted(error: BaseException) -> bool:
+    if not isinstance(error, OpenAIAPIError) or error.status_code != 429:
+        return False
+    machine_code = " ".join((error.error_type, error.error_code)).casefold()
+    message = str(error).casefold()
+    return "insufficient_quota" in machine_code or any(
+        phrase in message for phrase in (
+            "no credits remaining", "credit balance", "billing quota", "add credits",
+        )
+    )
+
+
+def _tool_succeeded(result: Any) -> bool:
+    return isinstance(result, dict) and bool(result) and not (
+        result.get("isError") or result.get("error")
+    )
 
 
 def _wake_signature_text(text: str) -> str:
@@ -141,16 +238,29 @@ def _wake_signature_text(text: str) -> str:
 
 
 def matches_device_wake_signature(english: str, vietnamese: str) -> bool:
-    """Require a known result from both recognizers for device-specific misses."""
+    """Accept only strong bilingual evidence for device-specific STT misses.
+
+    The paired variants below come from this ES3C28P microphone and the
+    owner's pronunciation. Neither generic phrase is accepted on its own;
+    both recognizers must produce a known pair for the same audio capture.
+    """
     en = _wake_signature_text(english)
     vi = _wake_signature_text(vietnamese)
-    english_variants = {"i don t", "hey don t", "are you done", "how you doing"}
+    english_variants = {"hey don", "hey dong", "hey dome", "hey tom"}
     vietnamese_variants = {
-        "hanh dong", "hinh dong", "hinh tron", "thay tro", "thay chon",
-        "thay tung", "thay tran", "thay chua", "hay chon", "thay doi",
-        "cay thong", "cay trong", "het roi", "hey yo", "he does",
+        "hay dom", "hey dom", "hay dong", "hey dong",
     }
-    return en in english_variants and vi in vietnamese_variants
+    if en in english_variants and vi in vietnamese_variants:
+        return True
+    learned_pairs = {
+        # Captured repeatedly on 2026-09-05 while the owner said "Hey Dom".
+        ("how you doing", "huy dong"),
+        ("how you doing", "hinh dong"),
+        ("how you doing", "hanh dong"),
+        ("how you doing", "hello"),
+        ("are you down", "huy tam"),
+    }
+    return (en, vi) in learned_pairs
 
 
 def split_wake_word(text: str) -> tuple[bool, str]:
@@ -163,14 +273,12 @@ def split_wake_word(text: str) -> tuple[bool, str]:
                 normalized_chars.append("d" if char == "đ" else char)
                 original_end_offsets.append(index + 1)
     normalized = "".join(normalized_chars)
-    # Cloud STT often maps the short brand phrase to nearby English words
-    # (for example "Hello" or "Hey Don"). Keep fallbacks prefix-only so
-    # ordinary sentences mentioning Dom later do not activate the assistant.
+    # Always-on listening must not treat generic greetings (Hello), "huy động"
+    # or English pronouns (he does) as wake words. Keep brand variants narrow.
+    # Match the full phrase first so "Hey Dom <command>" strips both words.
     patterns = (
-        r"^\s*(?:hey|he|hay|hai|hei)\s+(?:dom|dome|don|dong|down|dam|tom|dog|does|do|to)(?!['’][a-z])\b",
-        r"^\s*(?:hello|helo|halo)(?:\s+(?:dom|dome|don|dong|down|dam|tom))?\b",
-        r"^\s*(?:huy|hui)\s+(?:dong|dom)\b",
-        r"^\s*(?:dom|dome|don|dong)\b",
+        r"^\s*(?:hey|hay|hai|hei)\s+(?:dom|dome|don|dong)(?!['’][a-z])\b",
+        r"^\s*(?:hey|dom)(?!['’][a-z])\b",
     )
     match = next((candidate for pattern in patterns
                   if (candidate := re.search(pattern, normalized))), None)
@@ -188,7 +296,10 @@ class VoiceSession:
         self.session_id = session_id
         self.state = "IDLE"
         self.send_lock = asyncio.Lock()
-        self.pre_roll: deque[bytes] = deque(maxlen=3)
+        self.pre_roll: deque[bytes] = deque(maxlen=8)
+        self.noise_samples: deque[int] = deque(maxlen=50)
+        self.start_candidate_frames = 0
+        self.capture_threshold = VAD_ENERGY_THRESHOLD
         self.audio = bytearray()
         self.speech_frames = 0
         self.silence_frames = 0
@@ -201,6 +312,15 @@ class VoiceSession:
         self.activation_timeout_task: asyncio.Task[None] | None = None
         self.pending_mcp: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self.next_request_id = 1
+        self.provider_retry_after: dict[str, float] = {}
+        self.last_llm_provider = "pending"
+        self.last_llm_model = "pending"
+
+    def provider_ready(self, provider: str) -> bool:
+        return time.monotonic() >= self.provider_retry_after.get(provider, 0.0)
+
+    def defer_provider(self, provider: str) -> None:
+        self.provider_retry_after[provider] = time.monotonic() + PROVIDER_RETRY_SECONDS
 
     async def send_json(self, message: dict[str, Any]) -> None:
         message.setdefault("session_id", self.session_id)
@@ -221,6 +341,20 @@ class VoiceSession:
         self.speech_started_at = 0.0
         self.max_energy = 0
         self.speech_energy_total = 0
+        self.start_candidate_frames = 0
+        self.capture_threshold = VAD_ENERGY_THRESHOLD
+
+    def vad_threshold(self) -> int:
+        if len(self.noise_samples) < VAD_CALIBRATION_FRAMES:
+            return VAD_ENERGY_THRESHOLD
+        ordered = sorted(self.noise_samples)
+        # A lower quartile remains stable when an occasional voice frame enters
+        # the rolling noise sample.
+        noise_floor = ordered[len(ordered) // 4]
+        return max(
+            VAD_ENERGY_THRESHOLD,
+            round(noise_floor * VAD_NOISE_MULTIPLIER + VAD_NOISE_MARGIN),
+        )
 
     async def set_wake_word(self, notify_board: bool = False) -> None:
         current = asyncio.current_task()
@@ -233,13 +367,16 @@ class VoiceSession:
             await self.send_json({"type": "listen", "state": "wake"})
         await self.send_json({"type": "llm", "emotion": "idle", "text": ""})
 
-    async def set_listening(self, notify_board: bool = False) -> None:
+    async def set_listening(self, notify_board: bool = False, *, source: str | None = None) -> None:
         if self.activation_timeout_task:
             self.activation_timeout_task.cancel()
         self.state = "LISTENING"
         self.reset_capture()
         if notify_board:
-            await self.send_json({"type": "listen", "state": "start"})
+            message = {"type": "listen", "state": "start"}
+            if source is not None:
+                message["source"] = source
+            await self.send_json(message)
         await self.send_json({"type": "llm", "emotion": "listening", "text": "Mình đang nghe đây..."})
         self.activation_timeout_task = asyncio.create_task(
             self.expire_activation(), name=f"wake-timeout-{self.session_id}"
@@ -257,21 +394,34 @@ class VoiceSession:
     async def consume_audio(self, pcm: bytes) -> None:
         if self.state not in {"WAKE_WORD", "LISTENING"} or self.pipeline_task is not None:
             return
-        energy = pcm_rms(pcm)
+        energy = pcm_signal_rms(pcm)
         self.max_energy = max(self.max_energy, energy)
         if not self.speech_started:
             self.pre_roll.append(pcm)
-            if energy < VAD_ENERGY_THRESHOLD:
+            if len(self.noise_samples) < VAD_CALIBRATION_FRAMES:
+                self.noise_samples.append(energy)
+                return
+            threshold = self.vad_threshold()
+            if energy < threshold:
+                self.noise_samples.append(energy)
+                self.start_candidate_frames = 0
+                return
+            self.start_candidate_frames += 1
+            if self.start_candidate_frames < VAD_START_FRAMES:
                 return
             self.speech_started = True
             self.speech_started_at = time.monotonic()
             self.audio.extend(b"".join(self.pre_roll))
-            self.speech_frames = 1
+            self.speech_frames = self.start_candidate_frames
             self.speech_energy_total = energy
+            self.capture_threshold = threshold
             self.silence_frames = 0
             return
         self.audio.extend(pcm)
-        if energy >= VAD_ENERGY_THRESHOLD:
+        # End the utterance against the calibrated room noise. A low fixed
+        # release threshold made noisy rooms run every wake capture to 3 s.
+        release_threshold = max(VAD_ENERGY_THRESHOLD, round(self.capture_threshold * 0.9))
+        if energy >= release_threshold:
             self.speech_frames += 1
             self.speech_energy_total += energy
             self.silence_frames = 0
@@ -289,14 +439,27 @@ class VoiceSession:
             len(self.audio) >= frame_limit * PCM_FRAME_BYTES
             or time.monotonic() - self.speech_started_at >= elapsed_limit
         )
+        min_speech_frames = (
+            WAKE_MIN_SPEECH_FRAMES if self.state == "WAKE_WORD" else VAD_MIN_SPEECH_FRAMES
+        )
+        if reached_hard_limit and self.speech_frames < min_speech_frames:
+            logger.debug(
+                "Discarding short VAD event device=%s speech_frames=%d required=%d",
+                self.device_id, self.speech_frames, min_speech_frames,
+            )
+            self.reset_capture()
+            return
         if (
-            self.speech_frames >= VAD_MIN_SPEECH_FRAMES
+            self.speech_frames >= min_speech_frames
             and (enough_recent_silence or reached_hard_limit)
         ):
             await self.start_pipeline()
 
     async def start_pipeline(self) -> None:
-        if self.pipeline_task is not None or self.speech_frames < VAD_MIN_SPEECH_FRAMES:
+        min_speech_frames = (
+            WAKE_MIN_SPEECH_FRAMES if self.state == "WAKE_WORD" else VAD_MIN_SPEECH_FRAMES
+        )
+        if self.pipeline_task is not None or self.speech_frames < min_speech_frames:
             return
         pcm = bytes(self.audio)
         wake_check = self.state == "WAKE_WORD"
@@ -337,22 +500,51 @@ class VoiceSession:
         await self.send_json({"type": "tts", "state": "stop"})
         await self.set_wake_word(notify_board=True)
 
+    async def transcribe_wake_google(self, pcm: bytes) -> list[tuple[str, str]]:
+        """Bound both cloud requests; a slow secondary cannot delay activation.
+
+        Prefer the configured language for Vietnamese command suffixes. Allow
+        it a short grace period if English recognizes the wake phrase first.
+        """
+        async def recognize(language: str) -> tuple[str, str]:
+            try:
+                text = await asyncio.wait_for(
+                    self._transcribe_google(pcm, language, timeout=settings.WAKE_STT_TIMEOUT_SEC),
+                    timeout=settings.WAKE_STT_TIMEOUT_SEC,
+                )
+                return language, text
+            except Exception as exc:
+                logger.debug("Wake STT unavailable language=%s: %s", language, exc)
+                return language, ""
+
+        languages = list(dict.fromkeys((settings.STT_LANGUAGE, "en-US")))
+        pending = {asyncio.create_task(recognize(language)) for language in languages}
+        transcripts: list[tuple[str, str]] = []
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                transcripts.extend(task.result() for task in done)
+                matched = [item for item in transcripts if split_wake_word(item[1])[0]]
+                if matched:
+                    if pending and not any(lang == settings.STT_LANGUAGE for lang, _ in transcripts):
+                        done, pending = await asyncio.wait(pending, timeout=0.15)
+                        transcripts.extend(task.result() for task in done)
+                    break
+        finally:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        return sorted(transcripts, key=lambda item: item[0] != settings.STT_LANGUAGE)
+
     async def run_wake_check(self, pcm: bytes) -> None:
+        started = time.monotonic()
         try:
             wake_pcm = normalize_wake_pcm(pcm)
-            if settings.STT_PROVIDER == "google-web":
-                vi_result, en_result = await asyncio.gather(
-                    self.transcribe(wake_pcm, language=settings.STT_LANGUAGE),
-                    self.transcribe(wake_pcm, language="en-US"),
-                    return_exceptions=True,
-                )
-                transcripts = [
-                    ("en-US", en_result if isinstance(en_result, str) else ""),
-                    (settings.STT_LANGUAGE, vi_result if isinstance(vi_result, str) else ""),
-                ]
-                errors = [result for result in (vi_result, en_result) if isinstance(result, Exception)]
-                if errors and not any(text for _, text in transcripts):
-                    raise errors[0]
+            if settings.WAKE_STT_PROVIDER == "google-web":
+                transcripts = await self.transcribe_wake_google(wake_pcm)
+                if not any(text for _, text in transcripts) and settings.STT_OPENROUTER_FALLBACK:
+                    fallback = await self._transcribe_openrouter(wake_pcm)
+                    transcripts.append(("openrouter-audio", fallback))
             else:
                 transcripts = [(settings.STT_LANGUAGE, await self.transcribe(wake_pcm))]
 
@@ -365,8 +557,9 @@ class VoiceSession:
                     matched = True
                     command = candidate_command
                     break
-            if not matched and len(transcripts) == 2 and matches_device_wake_signature(
-                transcripts[0][1], transcripts[1][1]
+            by_language = dict(transcripts)
+            if not matched and matches_device_wake_signature(
+                by_language.get("en-US", ""), by_language.get(settings.STT_LANGUAGE, "")
             ):
                 language = "bilingual-signature"
                 transcript = f"{transcripts[0][1]} / {transcripts[1][1]}"
@@ -382,15 +575,15 @@ class VoiceSession:
                 await self.set_wake_word()
                 return
             logger.info(
-                "Wake phrase accepted device=%s language=%s transcript=%r candidates=%r",
-                self.device_id, language, transcript, transcripts,
+                "Wake phrase accepted device=%s language=%s transcript=%r candidates=%r stt_ms=%d",
+                self.device_id, language, transcript, transcripts, round((time.monotonic() - started) * 1000),
             )
             if command:
-                await self.send_json({"type": "listen", "state": "processing"})
+                await self.send_json({"type": "listen", "state": "processing", "source": "wake_word"})
                 await self.process_transcript(command)
                 await self.set_wake_word(notify_board=True)
             else:
-                await self.set_listening(notify_board=True)
+                await self.set_listening(notify_board=True, source="wake_word")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -419,9 +612,13 @@ class VoiceSession:
             await self.send_json({"type": "stt", "text": transcript})
             history = await conversation_store.recent_context(self.device_id)
             turn_id = await conversation_store.create_turn(
-                self.device_id, transcript, "openrouter", settings.OPENROUTER_MODEL
+                self.device_id, transcript, "pending", "pending"
             )
             answer = await self.chat(history, transcript, turn_id)
+            answer = plain_speech_text(answer)
+            await conversation_store.update_execution(
+                turn_id, self.last_llm_provider, self.last_llm_model
+            )
             await conversation_store.complete_turn(turn_id, answer)
             await self.send_json({"type": "llm", "emotion": "happy", "text": answer})
             await self.speak(answer)
@@ -459,20 +656,114 @@ class VoiceSession:
             raise RuntimeError(f"OpenRouter HTTP {response.status_code}: {detail}")
         return response.json()
 
-    async def transcribe(self, pcm: bytes, language: str | None = None) -> str:
-        if settings.STT_PROVIDER == "google-web":
-            audio = sr.AudioData(pcm, PCM_SAMPLE_RATE, PCM_SAMPLE_WIDTH)
-            recognizer = sr.Recognizer()
+    async def _openai(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not settings.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        headers = {
+            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=settings.OPENAI_TIMEOUT_SEC) as client:
+            response = await client.post(
+                f"{settings.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+        if response.is_error:
+            raise _openai_api_error(response, "chat")
+        return response.json()
+
+    async def _llm(self, payload: dict[str, Any]) -> dict[str, Any]:
+        order = [name.strip().lower() for name in settings.LLM_PROVIDER_ORDER.split(",")]
+        openai_configured = "openai" in order and bool(settings.OPENAI_API_KEY)
+        quota_exhausted = openai_configured and not self.provider_ready("openai-llm-quota")
+        if openai_configured and not quota_exhausted:
             try:
-                return _clean_text(await asyncio.to_thread(
-                    recognizer.recognize_google,
-                    audio,
-                    language=language or settings.STT_LANGUAGE,
-                ))
-            except sr.UnknownValueError:
-                return ""
-            except sr.RequestError as exc:
-                raise RuntimeError(f"Google STT unavailable: {exc}") from exc
+                response = await self._openai({**payload, "model": settings.OPENAI_MODEL})
+                self.last_llm_provider, self.last_llm_model = "openai", settings.OPENAI_MODEL
+                return response
+            except Exception as exc:
+                if not is_openai_credit_exhausted(exc):
+                    # Rate limits, authentication, timeouts and server/network
+                    # errors are not proof that account credit is exhausted.
+                    raise
+                quota_exhausted = True
+                self.defer_provider("openai-llm-quota")
+                logger.warning(
+                    "OpenAI LLM quota exhausted; using OpenRouter for %ds: %s",
+                    PROVIDER_RETRY_SECONDS, exc,
+                )
+        if (quota_exhausted or not openai_configured) and "openrouter" in order:
+            if not settings.OPENROUTER_API_KEY:
+                raise RuntimeError("OPENROUTER_API_KEY is not configured")
+            response = await self._openrouter({**payload, "model": settings.OPENROUTER_MODEL})
+            self.last_llm_provider, self.last_llm_model = "openrouter", settings.OPENROUTER_MODEL
+            return response
+        raise RuntimeError("No configured LLM provider is available")
+
+    async def transcribe(self, pcm: bytes, language: str | None = None) -> str:
+        if settings.STT_PROVIDER == "openai":
+            prepared = normalize_speech_pcm(pcm)
+            selected_language = language or settings.STT_LANGUAGE
+            if self.provider_ready("openai-stt"):
+                try:
+                    return await self._transcribe_openai(prepared, selected_language)
+                except Exception as exc:
+                    self.defer_provider("openai-stt")
+                    logger.warning("OpenAI STT failed; falling back to Google STT: %s", exc)
+            return await self._transcribe_google(prepared, selected_language)
+        if settings.STT_PROVIDER == "google-web":
+            prepared = normalize_speech_pcm(pcm)
+            transcript = await self._transcribe_google(
+                prepared, language or settings.STT_LANGUAGE
+            )
+            if transcript or not settings.STT_OPENROUTER_FALLBACK:
+                return transcript
+            logger.info("Google STT returned no speech; trying OpenRouter Audio")
+            return await self._transcribe_openrouter(prepared)
+        return await self._transcribe_openrouter(normalize_speech_pcm(pcm))
+
+    async def _transcribe_google(self, pcm: bytes, language: str, *, timeout: float | None = None) -> str:
+        audio = sr.AudioData(pcm, PCM_SAMPLE_RATE, PCM_SAMPLE_WIDTH)
+        recognizer = sr.Recognizer()
+        if timeout is not None:
+            recognizer.operation_timeout = timeout
+        try:
+            return _clean_text(await asyncio.to_thread(
+                recognizer.recognize_google,
+                audio,
+                language=language,
+            ))
+        except sr.UnknownValueError:
+            return ""
+        except sr.RequestError as exc:
+            raise RuntimeError(f"Google STT unavailable: {exc}") from exc
+
+    async def _transcribe_openai(self, pcm: bytes, language: str) -> str:
+        if not settings.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        # The Audio API expects ISO-639-1 language codes rather than locales.
+        language_code = language.split("-", 1)[0].lower()
+        headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
+        files = {"file": ("speech.wav", pcm_to_wav(pcm), "audio/wav")}
+        data = {
+            "model": settings.OPENAI_STT_MODEL,
+            "language": language_code,
+            "response_format": "json",
+            "prompt": "Câu nói có thể bắt đầu bằng wake word 'Hey Dom', sau đó là lệnh tiếng Việt.",
+        }
+        async with httpx.AsyncClient(timeout=settings.OPENAI_TIMEOUT_SEC) as client:
+            response = await client.post(
+                f"{settings.OPENAI_BASE_URL.rstrip('/')}/audio/transcriptions",
+                headers=headers,
+                files=files,
+                data=data,
+            )
+        if response.is_error:
+            raise _openai_api_error(response, "STT")
+        return _clean_text(response.json().get("text"))
+
+    async def _transcribe_openrouter(self, pcm: bytes) -> str:
         audio = base64.b64encode(pcm_to_wav(pcm)).decode("ascii")
         response = await self._openrouter({
             "model": settings.OPENROUTER_AUDIO_MODEL,
@@ -488,14 +779,18 @@ class VoiceSession:
     async def chat(self, history: list[dict[str, str]], transcript: str, turn_id: str) -> str:
         direct = await self.try_direct_command(transcript, turn_id)
         if direct:
+            self.last_llm_provider, self.last_llm_model = "device", "deterministic-command-router"
             return direct
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT}, *history,
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *[
+                {**item, "content": plain_speech_text(item.get("content", ""))}
+                for item in history
+            ],
             {"role": "user", "content": transcript},
         ]
         for _ in range(3):
-            response = await self._openrouter({
-                "model": settings.OPENROUTER_MODEL,
+            response = await self._llm({
                 "messages": messages,
                 "tools": TOOLS,
                 "tool_choice": "auto",
@@ -503,19 +798,23 @@ class VoiceSession:
             })
             choices = response.get("choices") or []
             if not choices:
-                raise RuntimeError("OpenRouter returned no answer")
+                raise RuntimeError("LLM returned no answer")
             message = choices[0].get("message") or {}
             calls = message.get("tool_calls") or []
             if not calls:
-                answer = _clean_text(message.get("content"))
+                answer = plain_speech_text(message.get("content"))
+                if claims_app_launch(answer):
+                    logger.warning("Suppressed app-launch confirmation without a device tool result")
+                    return APP_LAUNCH_FAILED
                 if answer:
                     return answer
-                raise RuntimeError("OpenRouter returned an empty answer")
+                raise RuntimeError("LLM returned an empty answer")
             messages.append({
                 "role": "assistant",
                 "content": message.get("content"),
                 "tool_calls": calls,
             })
+            app_answer = None
             for call in calls:
                 function = call.get("function") or {}
                 name = str(function.get("name") or "")
@@ -532,7 +831,7 @@ class VoiceSession:
                     started = time.monotonic()
                     try:
                         result = await self.call_device_tool(name, arguments)
-                        status = "error" if result.get("isError") else "success"
+                        status = "success" if _tool_succeeded(result) else "error"
                     except Exception as exc:
                         result = {"error": str(exc)}
                         status = "error"
@@ -545,6 +844,15 @@ class VoiceSession:
                     "tool_call_id": call.get("id"),
                     "content": json.dumps(result, ensure_ascii=False),
                 })
+                if name == "app.launch":
+                    app_answer = (
+                        APP_CONFIRMATIONS.get(arguments.get("app"), APP_LAUNCH_FAILED)
+                        if status == "success" else APP_LAUNCH_FAILED
+                    )
+            # Opening an app is a terminal UI action. Its confirmation comes
+            # from the MCP result, not another model-generated success claim.
+            if app_answer is not None:
+                return app_answer
         raise RuntimeError("Too many tool-call rounds")
 
     async def try_direct_command(self, transcript: str, turn_id: str) -> str | None:
@@ -561,10 +869,12 @@ class VoiceSession:
         number_match = re.search(r"\b(100|[1-9]?\d)\b", text)
         number = int(number_match.group(1)) if number_match else None
 
-        if "wallpaper" in text or "hình nền" in text:
-            name, arguments, success_text = "app.launch", {"app": "wallpaper"}, "Đã mở ứng dụng hình nền rồi nhé!"
-        elif "clock" in text or "đồng hồ" in text:
-            name, arguments, success_text = "app.launch", {"app": "clock"}, "Đã mở ứng dụng đồng hồ rồi nhé!"
+        app = requested_app(transcript)
+        if app is not None:
+            name, arguments = "app.launch", {"app": app}
+            success_text = APP_CONFIRMATIONS[app]
+        elif is_unresolved_launch_request(transcript):
+            return APP_COMMAND_HELP
         elif "độ sáng" in text or "màn hình" in text:
             if "tăng" in text:
                 delta = number or 10
@@ -596,7 +906,7 @@ class VoiceSession:
         started = time.monotonic()
         try:
             result = await self.call_device_tool(name, arguments)
-            status = "error" if result.get("isError") else "success"
+            status = "success" if _tool_succeeded(result) else "error"
         except Exception as exc:
             result = {"error": str(exc), "isError": True}
             status = "error"
@@ -703,12 +1013,12 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         validate_dom_hello(hello)
         await voice_registry.add(session_id)
         await session.send_json({
-            "type": "hello", "provider": "openrouter", "transport": "websocket",
+            "type": "hello", "provider": primary_llm_provider(), "transport": "websocket",
             "audio_params": {"codec": "pcm", "sample_rate": 16_000, "channels": 1, "frame_duration": 60},
             "features": {"mcp": True, "vad": True, "emotions": True, "tts_streaming": True},
         })
         await session.set_wake_word()
-        logger.info("OpenRouter voice connected device=%s session=%s", device_id, session_id)
+        logger.info("Cloud voice connected device=%s provider=%s session=%s", device_id, primary_llm_provider(), session_id)
         while True:
             raw_message = await websocket.receive()
             if raw_message.get("type") == "websocket.disconnect":

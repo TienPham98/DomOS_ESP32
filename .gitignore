@@ -27,5 +27,8 @@ __pycache__/
 .runtime-logs/
 .runtime-research/
 backend-go/uploads/
+backend-python/data/manchester_united_schedule.json
+backend-python/data/manchester_united_background*.jpg
+backend-python/data/codex_usage.json
 backend-go/server.exe~
 firmware/managed_components/

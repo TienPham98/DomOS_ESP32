@@ -57,19 +57,30 @@ firmware/
 1. Khởi tạo NVS; erase/re-init nếu schema NVS cũ.
 2. Khởi tạo `ES3C28PBoard`: display, touch, audio, storage.
 3. Khởi tạo `EventBus` và layout LittleFS.
-4. Chạy task dispatch event.
-5. Start Wi-Fi, OTA, media và HTTP server.
-6. Start `AssistantService` với Voice Gateway cố định.
-7. Start `AppManager` và đăng ký callback MCP/app.
-8. Đợi Wi-Fi có IP rồi mới start MQTT.
+4. Start Wi-Fi, OTA, media và HTTP server.
+5. Start audio pipeline của `AssistantService` với Voice Gateway cố định.
+6. Start `AppManager`, tạo hàng đợi mở app và đăng ký callback EventBus.
+7. Chạy task dispatch event sau khi đăng ký listener.
+8. Đợi Wi-Fi có IP rồi start MQTT và tự mở voice session nghe nền.
 9. Start LVGL task.
+
+Không cần vào màn hình Assistant lần đầu để bật nghe nền. Wake được nhận sẽ
+đưa Assistant lên trước bằng `AppLaunchRequested`; lệnh mở app tiếp theo dùng
+cùng EventBus FIFO để giữ thứ tự. `RequestLaunch` chỉ gửi hàng đợi FreeRTOS,
+timer LVGL xử lý chuyển màn hình; task WebSocket không tạo timer/sửa UI.
+Client WebSocket đang reconnect không bị tạo lại khi người dùng mở Assistant.
+
+Nghe nền vẫn cần gateway/cloud STT, không phải wake offline trên ESP32. Chi tiết
+và phần cá nhân hóa giọng chưa hoàn tất ở [WAKE_WORD.md](../docs/WAKE_WORD.md).
 
 MQTT được trì hoãn tới `IP_EVENT_GOT_IP` để tránh lwIP gửi dữ liệu khi Wi-Fi còn association và để AppManager cài message handler trước khi broker deliver command.
 
 ## Cấu hình mạng
 
-- Board: `<DEVICE_IP>`.
-- SSID: `Dom_12`.
+- Board trên `Dom_12`: `<DEVICE_IP>`.
+- SSID mặc định: `Dom_12`; có thể đổi trong app Wi-Fi Config.
+- SSID khác dùng DHCP để nhận IP, gateway và DNS tự động.
+- SSID/password được lưu trong NVS và dùng lại sau reboot.
 - Host backend: `<HOST_IP>`.
 - MQTT: `mqtt://<HOST_IP>:1883`.
 - Voice: `ws://<HOST_IP>:8000/api/v1/voice/stream`.
@@ -81,7 +92,7 @@ Trong `idf.py menuconfig` → `DomOS`:
 
 | Kconfig | Mặc định | Ý nghĩa |
 |---|---|---|
-| `CONFIG_DOMOS_WIFI_SSID` | `Dom_12` | SSID Wi-Fi |
+| `CONFIG_DOMOS_WIFI_SSID` | `Dom_12` | SSID mặc định khi NVS chưa có credential |
 | `CONFIG_DOMOS_WIFI_PASSWORD` | rỗng | WPA2 password, compile vào firmware development |
 | `CONFIG_DOMOS_WIFI_MAX_RETRY` | `10` | Số lần reconnect |
 | `CONFIG_DOMOS_MQTT_URI` | từ `.env` | MQTT broker |
@@ -140,13 +151,15 @@ App được đăng ký khi boot:
 - `launcher`
 - `clock`
 - `wallpaper`
+- `man-utd`
+- `codex-credit`
 - `dashboard`
 - `settings`
 - `smart-home`
 - `assistant`
 - `ota`
 
-Launcher mặc định mở trước. HTTP `/api/launch` có thể mở các app trên; MCP `app.launch` hiện chỉ cho phép `wallpaper` và `clock`.
+Launcher mặc định mở trước. HTTP `/api/launch` có thể mở các app trên; MCP `app.launch` cho phép `wallpaper`, `clock`, `man-utd` và `codex-credit`.
 
 ## Assistant state machine
 
@@ -215,9 +228,28 @@ WebSocket callback chạy trong task của ESP client. Shared state dùng atomic
 - `speaker.set_volume`
 - `speaker.adjust_volume`
 - `display.adjust_brightness`
-- `app.launch` (`wallpaper`, `clock`)
+- `app.launch` (`wallpaper`, `clock`, `man-utd`, `codex-credit`)
 
 Firmware hỗ trợ MCP `initialize`, `tools/list`, `tools/call` và trả JSON-RPC result/error.
+
+### Manchester United fixture app
+
+App `man-utd` hiển thị ảnh nền đỏ với logo Manchester United, giải đấu, cặp đấu, ngày và giờ địa phương của trận kế tiếp. Board chỉ gọi Voice Gateway qua `CONFIG_DOMOS_AI_HTTP_BASE`; API key của nhà cung cấp không được đưa vào firmware.
+
+- Lịch: `GET /api/football/manchester-united`.
+- Nền LCD: `GET /api/football/manchester-united/background.jpg` (JPEG 320×240).
+- Dữ liệu và ảnh được lưu trong LittleFS; download lỗi không ghi đè bản cache tốt.
+- HTTP chạy ở task `manutd_fetch`, core 0, priority 3; không chặn `mic_capture`/`audio_out` priority 7.
+- Mở từ launcher, HTTP `/api/launch` với `{"app":"man-utd"}`, hoặc nói “mở lịch Manchester United”.
+
+### Codex usage app
+
+App `codex-credit` hiển thị phần trăm còn lại của hạn mức 5 giờ và tuần, thời điểm reset của từng cửa sổ, cùng trạng thái full reset. Board tải JSON từ `GET /api/codex/usage` của Voice Gateway trong task `codex_fetch` trên core 0, priority 3 và giữ cache LittleFS khi mất mạng.
+
+- Mở bằng nút `Codex` trong launcher.
+- HTTP `/api/launch` với `{"app":"codex-credit"}`.
+- Hoặc nói “mở hạn mức Codex”.
+- Nút refresh ở góc dưới phải gọi API với `force=true`.
 
 ## HTTP API của board
 

@@ -231,11 +231,15 @@ esp_err_t LaunchApiHandler(httpd_req_t *request)
         else if (std::strstr(buf, "dashboard")) app = "dashboard";
         else if (std::strstr(buf, "settings")) app = "settings";
         else if (std::strstr(buf, "wallpaper")) app = "wallpaper";
+        else if (std::strstr(buf, "man-utd")) app = "man-utd";
+        else if (std::strstr(buf, "codex-credit")) app = "codex-credit";
         else if (std::strstr(buf, "smart-home")) app = "smart-home";
-        else if (std::strstr(buf, "wifi_setup")) app = "wifi_setup";
+        else if (std::strstr(buf, "wifi-setup") || std::strstr(buf, "wifi_setup")) app = "wifi-setup";
         else if (std::strstr(buf, "ota")) app = "ota";
         else if (std::strstr(buf, "clock")) app = "clock";
-        s_apps->Launch(app);
+        // HTTP handlers run outside the LVGL task. Queue the screen change so
+        // all UI mutations stay on LVGL's owning thread.
+        s_apps->RequestLaunch(app);
     }
 
     httpd_resp_set_type(request, "application/json");

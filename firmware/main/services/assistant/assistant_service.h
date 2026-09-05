@@ -108,6 +108,7 @@ private:
     std::atomic<bool> tts_active_{false};
 
     mutable std::mutex mutex_;
+    std::mutex channel_mutex_;
     std::string emotion_        = "idle";
     std::string user_text_      = "";
     std::string assistant_text_ = "";

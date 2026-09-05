@@ -85,11 +85,13 @@ bool WsClient::Connect(const WsClientConfig &cfg)
     }
     ESP_LOGI(TAG, "Connecting to %s (buf=%d, reconnect=%dms)",
              ws_cfg.uri ? ws_cfg.uri : "?", ws_cfg.buffer_size, ws_cfg.reconnect_timeout_ms);
+    started_.store(true);
     return true;
 }
 
 void WsClient::Disconnect()
 {
+    started_.store(false);
     if (client_ == nullptr) return;
     auto *handle = static_cast<esp_websocket_client_handle_t>(client_);
     esp_websocket_client_stop(handle);

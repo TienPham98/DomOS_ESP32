@@ -1,5 +1,6 @@
 #define LV_USE_SJPG 1
 #include "app_manager.h"
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -23,10 +24,20 @@
 #include "services/filesystem/upload_server.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 #include <vector>
 
 
 namespace {
+
+struct AppLaunchRequest {
+    char app[24];
+};
+
+// Voice remains resident. Only one widget HTTP/LittleFS worker may consume
+// another internal-RAM stack at a time; the other app retries on its UI timer.
+std::atomic<bool> s_widget_fetch_busy{false};
 
 struct PendingMqttCommand {
     AppManager *manager;
@@ -164,6 +175,8 @@ void ToAssistant(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_use
 void ToSmartHome(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("smart-home"); }
 void ToSettings(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("settings"); }
 void ToOta(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("ota"); }
+void ToManUtd(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("man-utd"); }
+void ToCodexCredit(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("codex-credit"); }
 
 class ScreenApp : public IApp {
 public:
@@ -210,10 +223,15 @@ public:
         lv_obj_set_style_bg_color(screen_, lv_color_hex(0x121212), 0);
         Label(screen_, "DomOS", LV_ALIGN_TOP_LEFT, 16, 12);
         Label(screen_, "Home", LV_ALIGN_TOP_RIGHT, -16, 14);
-        Button(screen_, "Wallpaper", LV_ALIGN_CENTER, -75, -28, ToWallpaper, &manager_);
-        Button(screen_, "AI", LV_ALIGN_CENTER, 75, -28, ToAssistant, &manager_);
-        Button(screen_, "Smart Home", LV_ALIGN_CENTER, -75, 32, ToSmartHome, &manager_);
-        Button(screen_, "Settings", LV_ALIGN_CENTER, 75, 32, ToSettings, &manager_);
+        lv_obj_t *buttons[] = {
+            Button(screen_, "Wallpaper", LV_ALIGN_CENTER, -75, -43, ToWallpaper, &manager_),
+            Button(screen_, "AI", LV_ALIGN_CENTER, 75, -43, ToAssistant, &manager_),
+            Button(screen_, "Smart Home", LV_ALIGN_CENTER, -75, 3, ToSmartHome, &manager_),
+            Button(screen_, "Settings", LV_ALIGN_CENTER, 75, 3, ToSettings, &manager_),
+            Button(screen_, "Man Utd", LV_ALIGN_CENTER, -75, 49, ToManUtd, &manager_),
+            Button(screen_, "Codex", LV_ALIGN_CENTER, 75, 49, ToCodexCredit, &manager_),
+        };
+        for (lv_obj_t *button : buttons) lv_obj_set_size(button, 136, 38);
         lv_obj_add_event_cb(screen_, [](lv_event_t *event) {
             lv_indev_t *indev = lv_indev_get_act();
             if (indev != nullptr && lv_indev_get_gesture_dir(indev) == LV_DIR_LEFT) {
@@ -782,16 +800,23 @@ static bool DownloadUrlToFile(const std::string &url, const char *dest_path)
     esp_http_client_config_t http_cfg{};
     http_cfg.url = url.c_str();
     http_cfg.timeout_ms = 10000;
-    http_cfg.buffer_size = 2048;
-    http_cfg.buffer_size_tx = 1024;
+    http_cfg.buffer_size = 1024;
+    http_cfg.buffer_size_tx = 512;
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
-    if (client == nullptr) return false;
+    if (client == nullptr) {
+        AddSystemLog("ERROR", "http", "Client init failed for %s (internal=%u, psram=%u)",
+                     url.c_str(),
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        return false;
+    }
 
     bool ok = false;
     esp_err_t err = esp_http_client_open(client, 0);
     if (err == ESP_OK) {
         int content_len = esp_http_client_fetch_headers(client);
-        if (content_len < 2 * 1024 * 1024) {
+        const int status_code = esp_http_client_get_status_code(client);
+        if (status_code >= 200 && status_code < 300 && content_len < 2 * 1024 * 1024) {
             FILE *fp = std::fopen(dest_path, "wb");
             if (fp != nullptr) {
                 char buf[1024];
@@ -804,16 +829,19 @@ static bool DownloadUrlToFile(const std::string &url, const char *dest_path)
                 std::fclose(fp);
                 ok = (total > 0);
                 if (ok) {
-                    AddSystemLog("INFO", "wallpaper", "Downloaded %d bytes from %s to %s", total, url.c_str(), dest_path);
+                    AddSystemLog("INFO", "http", "Downloaded %d bytes from %s to %s", total, url.c_str(), dest_path);
                 } else {
-                    AddSystemLog("WARN", "wallpaper", "Downloaded 0 bytes from %s", url.c_str());
+                    AddSystemLog("WARN", "http", "Downloaded 0 bytes from %s", url.c_str());
                 }
             } else {
-                AddSystemLog("ERROR", "wallpaper", "Failed to open dest_path for write: %s", dest_path);
+                AddSystemLog("ERROR", "http", "Failed to open dest_path for write: %s", dest_path);
             }
+        } else {
+            AddSystemLog("ERROR", "http", "HTTP GET %s returned status=%d length=%d",
+                         url.c_str(), status_code, content_len);
         }
     } else {
-        AddSystemLog("ERROR", "wallpaper", "Failed HTTP GET: %s (err=%s)", url.c_str(), esp_err_to_name(err));
+        AddSystemLog("ERROR", "http", "Failed HTTP GET: %s (err=%s)", url.c_str(), esp_err_to_name(err));
     }
     esp_http_client_cleanup(client);
     return ok;
@@ -1149,6 +1177,515 @@ public:
 
 
 
+class ManchesterUnitedApp final : public ScreenApp {
+public:
+    using ScreenApp::ScreenApp;
+    const char *Id() const override { return "man-utd"; }
+
+    void Create() override
+    {
+        screen_ = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(screen_, lv_color_hex(0x39000d), 0);
+        lv_obj_clear_flag(screen_, LV_OBJ_FLAG_SCROLLABLE);
+
+        background_ = lv_img_create(screen_);
+        lv_obj_set_size(background_, 320, 240);
+        lv_obj_align(background_, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_add_flag(background_, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t *details = lv_obj_create(screen_);
+        lv_obj_set_size(details, 320, 88);
+        lv_obj_align(details, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_bg_color(details, lv_color_hex(0x160005), 0);
+        lv_obj_set_style_bg_opa(details, LV_OPA_80, 0);
+        lv_obj_set_style_border_width(details, 0, 0);
+        lv_obj_set_style_radius(details, 0, 0);
+        lv_obj_clear_flag(details, LV_OBJ_FLAG_SCROLLABLE);
+
+        competition_ = Label(details, "UPDATING SCHEDULE...", LV_ALIGN_TOP_MID, 0, 6,
+                             &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(competition_, lv_color_hex(0xffd34e), 0);
+
+        matchup_ = Label(details, "Manchester United vs TBD", LV_ALIGN_TOP_MID, 0, 27,
+                         &lv_font_montserrat_16);
+        lv_obj_set_width(matchup_, 300);
+        lv_label_set_long_mode(matchup_, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(matchup_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(matchup_, lv_color_white(), 0);
+
+        kickoff_ = Label(details, "--/--/----  -  --:--", LV_ALIGN_TOP_MID, 0, 53,
+                         &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(kickoff_, lv_color_hex(0xf8c8d0), 0);
+
+        status_ = Label(screen_, "Daily live fixture", LV_ALIGN_TOP_LEFT, 8, 38,
+                        &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(status_, lv_color_white(), 0);
+
+        lv_obj_t *refresh = lv_btn_create(screen_);
+        lv_obj_set_size(refresh, 34, 26);
+        lv_obj_align(refresh, LV_ALIGN_BOTTOM_RIGHT, -6, -6);
+        lv_obj_set_style_bg_color(refresh, lv_color_hex(0xda291c), 0);
+        lv_obj_set_style_radius(refresh, 7, 0);
+        lv_obj_set_style_pad_all(refresh, 0, 0);
+        lv_obj_add_event_cb(refresh, [](lv_event_t *event) {
+            static_cast<ManchesterUnitedApp *>(lv_event_get_user_data(event))->StartRefresh(true);
+        }, LV_EVENT_CLICKED, this);
+        Label(refresh, LV_SYMBOL_REFRESH, LV_ALIGN_CENTER, 0, 0, &lv_font_montserrat_14);
+
+        AddBackButton();
+        RenderCache();
+        refresh_timer_ = lv_timer_create([](lv_timer_t *timer) {
+            auto *app = static_cast<ManchesterUnitedApp *>(timer->user_data);
+            if (app->visible_) app->StartRefresh(false);
+        }, 60U * 60U * 1000U, this);
+    }
+
+    void Show() override
+    {
+        visible_ = true;
+        ScreenApp::Show();
+        RenderCache();
+        StartRefresh(false);
+    }
+
+    void Hide() override { visible_ = false; }
+
+private:
+    struct FetchContext {
+        ManchesterUnitedApp *app;
+        bool force;
+    };
+
+    struct FetchResult {
+        ManchesterUnitedApp *app;
+        bool schedule_ok;
+    };
+
+    static constexpr const char *kSchedulePath = "/littlefs/manutd_schedule.json";
+    static constexpr const char *kScheduleTempPath = "/littlefs/manutd_schedule.tmp";
+    static constexpr const char *kBackgroundPath = "/littlefs/manutd_background_v2.jpg";
+    static constexpr const char *kBackgroundTempPath = "/littlefs/manutd_background.tmp";
+
+    void StartRefresh(bool force)
+    {
+        bool expected = false;
+        if (!refresh_running_.compare_exchange_strong(expected, true)) return;
+        if (CONFIG_DOMOS_AI_HTTP_BASE[0] == '\0') {
+            refresh_running_ = false;
+            lv_label_set_text(status_, "Gateway URL not configured");
+            return;
+        }
+        lv_label_set_text(status_, force ? "Refreshing now..." : "Checking daily update...");
+        bool available = false;
+        if (!s_widget_fetch_busy.compare_exchange_strong(available, true)) {
+            refresh_running_ = false;
+            deferred_force_ = deferred_force_ || force;
+            lv_label_set_text(status_, "Waiting for other update...");
+            lv_timer_set_period(refresh_timer_, 1000);
+            return;
+        }
+        force = force || deferred_force_;
+        deferred_force_ = false;
+        lv_timer_set_period(refresh_timer_, 60U * 60U * 1000U);
+        auto *context = new FetchContext{this, force};
+        // This task writes LittleFS. Its stack must remain in internal RAM
+        // because SPI flash operations temporarily disable the PSRAM cache.
+        if (xTaskCreatePinnedToCore(
+                FetchTask, "manutd_fetch", 4096, context, 3, nullptr, 0) != pdPASS) {
+            delete context;
+            s_widget_fetch_busy = false;
+            refresh_running_ = false;
+            deferred_force_ = force;
+            lv_timer_set_period(refresh_timer_, 1000);
+            lv_label_set_text(status_, "Unable to start update");
+            AddSystemLog("ERROR", "man-utd", "Fetch task create failed (internal=%u, psram=%u)",
+                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        }
+    }
+
+    static void FetchTask(void *data)
+    {
+        auto *context = static_cast<FetchContext *>(data);
+        auto *app = context->app;
+        const std::string base = CONFIG_DOMOS_AI_HTTP_BASE;
+        std::string schedule_url = base + "/api/football/manchester-united";
+        if (context->force) schedule_url += "?force=true";
+        delete context;
+
+        bool schedule_ok = DownloadUrlToFile(schedule_url, kScheduleTempPath);
+        if (schedule_ok) {
+            std::remove(kSchedulePath);
+            schedule_ok = std::rename(kScheduleTempPath, kSchedulePath) == 0;
+        } else {
+            std::remove(kScheduleTempPath);
+        }
+
+        struct stat background_stat{};
+        bool background_ok = stat(kBackgroundPath, &background_stat) == 0 && background_stat.st_size > 0;
+        if (!background_ok) {
+            background_ok = DownloadUrlToFile(
+                base + "/api/football/manchester-united/background.jpg", kBackgroundTempPath);
+            if (background_ok) {
+                std::remove(kBackgroundPath);
+                background_ok = std::rename(kBackgroundTempPath, kBackgroundPath) == 0;
+            } else {
+                std::remove(kBackgroundTempPath);
+            }
+        }
+
+        auto *result = new FetchResult{app, schedule_ok};
+        if (lv_async_call([](void *value) {
+                auto *completed = static_cast<FetchResult *>(value);
+                completed->app->refresh_running_ = false;
+                if (completed->app->visible_) {
+                    completed->app->RenderCache();
+                    if (!completed->schedule_ok) {
+                        lv_label_set_text(completed->app->status_, "Offline - showing cached fixture");
+                    }
+                }
+                delete completed;
+            }, result) != LV_RES_OK) {
+            app->refresh_running_ = false;
+            delete result;
+        }
+        s_widget_fetch_busy = false;
+        vTaskDelete(nullptr);
+    }
+
+    void RenderCache()
+    {
+        if (DecodeJpegFileToBuffer(kBackgroundPath) && s_wallpaper_buf != nullptr) {
+            lv_img_set_src(background_, &s_wallpaper_dsc);
+            lv_obj_clear_flag(background_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_invalidate(background_);
+        }
+
+        FILE *fp = std::fopen(kSchedulePath, "rb");
+        if (fp == nullptr) return;
+        std::fseek(fp, 0, SEEK_END);
+        const long size = std::ftell(fp);
+        std::fseek(fp, 0, SEEK_SET);
+        if (size <= 0 || size > 16384) {
+            std::fclose(fp);
+            return;
+        }
+
+        std::vector<char> json(static_cast<size_t>(size) + 1, 0);
+        const size_t read = std::fread(json.data(), 1, static_cast<size_t>(size), fp);
+        std::fclose(fp);
+        if (read != static_cast<size_t>(size)) return;
+
+        cJSON *root = cJSON_Parse(json.data());
+        cJSON *match = root ? cJSON_GetObjectItemCaseSensitive(root, "next_match") : nullptr;
+        if (!cJSON_IsObject(match)) {
+            cJSON_Delete(root);
+            return;
+        }
+
+        auto value = [match](const char *key, const char *fallback) {
+            cJSON *item = cJSON_GetObjectItemCaseSensitive(match, key);
+            return cJSON_IsString(item) ? item->valuestring : fallback;
+        };
+        const std::string competition = VietnameseToAscii(value("competition", "Football"));
+        const std::string home = VietnameseToAscii(value("home_team", "Manchester United"));
+        const std::string away = VietnameseToAscii(value("away_team", "TBD"));
+        char matchup[128];
+        char kickoff[64];
+        std::snprintf(matchup, sizeof(matchup), "%s vs %s", home.c_str(), away.c_str());
+        std::snprintf(kickoff, sizeof(kickoff), "%s  -  %s", value("local_date", "--/--/----"),
+                      value("local_time", "--:--"));
+        lv_label_set_text(competition_, competition.c_str());
+        lv_label_set_text(matchup_, matchup);
+        lv_label_set_text(kickoff_, kickoff);
+
+        cJSON *stale = cJSON_GetObjectItemCaseSensitive(root, "stale");
+        lv_label_set_text(status_, cJSON_IsTrue(stale) ? "Cached fixture" : "");
+        cJSON_Delete(root);
+    }
+
+    lv_obj_t *background_ = nullptr;
+    lv_obj_t *competition_ = nullptr;
+    lv_obj_t *matchup_ = nullptr;
+    lv_obj_t *kickoff_ = nullptr;
+    lv_obj_t *status_ = nullptr;
+    lv_timer_t *refresh_timer_ = nullptr;
+    std::atomic<bool> refresh_running_{false};
+    bool deferred_force_ = false;
+    bool visible_ = false;
+};
+
+
+class CodexCreditApp final : public ScreenApp {
+public:
+    using ScreenApp::ScreenApp;
+    const char *Id() const override { return "codex-credit"; }
+
+    void Create() override
+    {
+        screen_ = lv_obj_create(nullptr);
+        lv_obj_set_style_bg_color(screen_, lv_color_hex(0x07111f), 0);
+        lv_obj_clear_flag(screen_, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *title = Label(screen_, "CODEX USAGE", LV_ALIGN_TOP_MID, 0, 7,
+                                &lv_font_montserrat_16);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x7dd3fc), 0);
+        CreateWindowCard(6, "5 HOUR", five_hour_percent_, five_hour_reset_, five_hour_bar_);
+        CreateWindowCard(163, "WEEKLY", weekly_percent_, weekly_reset_, weekly_bar_);
+
+        lv_obj_t *reset_card = lv_obj_create(screen_);
+        lv_obj_set_size(reset_card, 308, 57);
+        lv_obj_align(reset_card, LV_ALIGN_TOP_MID, 0, 119);
+        StyleCard(reset_card);
+        lv_obj_t *reset_heading = Label(reset_card, "FULL RESET", LV_ALIGN_TOP_LEFT, 0, -2,
+                                        &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(reset_heading, lv_color_hex(0xfbbf24), 0);
+        reset_title_ = Label(reset_card, "Weekly + 5 hr", LV_ALIGN_BOTTOM_LEFT, 0, 1,
+                             &lv_font_montserrat_14);
+        reset_expiry_ = Label(reset_card, "--", LV_ALIGN_BOTTOM_RIGHT, 0, 1,
+                              &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(reset_expiry_, lv_color_hex(0xcbd5e1), 0);
+
+        status_ = Label(screen_, "Waiting for usage data", LV_ALIGN_BOTTOM_MID, 0, -33,
+                        &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(status_, lv_color_hex(0x94a3b8), 0);
+
+        lv_obj_t *refresh = lv_btn_create(screen_);
+        lv_obj_set_size(refresh, 34, 26);
+        lv_obj_align(refresh, LV_ALIGN_BOTTOM_RIGHT, -6, -6);
+        lv_obj_set_style_bg_color(refresh, lv_color_hex(0x0369a1), 0);
+        lv_obj_set_style_radius(refresh, 7, 0);
+        lv_obj_set_style_pad_all(refresh, 0, 0);
+        lv_obj_add_event_cb(refresh, [](lv_event_t *event) {
+            static_cast<CodexCreditApp *>(lv_event_get_user_data(event))->StartRefresh(true);
+        }, LV_EVENT_CLICKED, this);
+        Label(refresh, LV_SYMBOL_REFRESH, LV_ALIGN_CENTER, 0, 0, &lv_font_montserrat_14);
+
+        AddBackButton();
+        RenderCache();
+        refresh_timer_ = lv_timer_create([](lv_timer_t *timer) {
+            auto *app = static_cast<CodexCreditApp *>(timer->user_data);
+            if (app->visible_) app->StartRefresh(false);
+        }, 60U * 1000U, this);
+    }
+
+    void Show() override
+    {
+        visible_ = true;
+        ScreenApp::Show();
+        RenderCache();
+        StartRefresh(false);
+    }
+
+    void Hide() override { visible_ = false; }
+
+private:
+    struct FetchContext {
+        CodexCreditApp *app;
+        bool force;
+    };
+
+    struct FetchResult {
+        CodexCreditApp *app;
+        bool ok;
+    };
+
+    static constexpr const char *kUsagePath = "/littlefs/codex_usage.json";
+    static constexpr const char *kUsageTempPath = "/littlefs/codex_usage.tmp";
+
+    static void StyleCard(lv_obj_t *card)
+    {
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x111f33), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(0x263b55), 0);
+        lv_obj_set_style_border_width(card, 1, 0);
+        lv_obj_set_style_radius(card, 9, 0);
+        lv_obj_set_style_pad_all(card, 7, 0);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    }
+
+    void CreateWindowCard(int x, const char *heading, lv_obj_t *&percent,
+                          lv_obj_t *&reset, lv_obj_t *&bar)
+    {
+        lv_obj_t *card = lv_obj_create(screen_);
+        lv_obj_set_size(card, 151, 78);
+        lv_obj_align(card, LV_ALIGN_TOP_LEFT, x, 34);
+        StyleCard(card);
+        lv_obj_t *heading_label = Label(card, heading, LV_ALIGN_TOP_LEFT, 0, -2,
+                                        &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(heading_label, lv_color_hex(0x94a3b8), 0);
+        percent = Label(card, "--% LEFT", LV_ALIGN_TOP_RIGHT, 0, -3,
+                        &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(percent, lv_color_white(), 0);
+        bar = lv_bar_create(card);
+        lv_obj_set_size(bar, 135, 8);
+        lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 28);
+        lv_bar_set_range(bar, 0, 100);
+        lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(0x263b55), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(0x22c55e), LV_PART_INDICATOR);
+        reset = Label(card, "Reset --", LV_ALIGN_BOTTOM_LEFT, 0, 1,
+                      &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(reset, lv_color_hex(0xcbd5e1), 0);
+    }
+
+    void StartRefresh(bool force)
+    {
+        bool expected = false;
+        if (!refresh_running_.compare_exchange_strong(expected, true)) return;
+        if (CONFIG_DOMOS_AI_HTTP_BASE[0] == '\0') {
+            refresh_running_ = false;
+            lv_label_set_text(status_, "Gateway URL not configured");
+            return;
+        }
+        lv_label_set_text(status_, force ? "Refreshing..." : "Checking usage...");
+        bool available = false;
+        if (!s_widget_fetch_busy.compare_exchange_strong(available, true)) {
+            refresh_running_ = false;
+            deferred_force_ = deferred_force_ || force;
+            lv_label_set_text(status_, "Waiting for other update...");
+            lv_timer_set_period(refresh_timer_, 1000);
+            return;
+        }
+        force = force || deferred_force_;
+        deferred_force_ = false;
+        lv_timer_set_period(refresh_timer_, 60U * 1000U);
+        auto *context = new FetchContext{this, force};
+        // This task writes LittleFS. Its stack must remain in internal RAM
+        // because SPI flash operations temporarily disable the PSRAM cache.
+        if (xTaskCreatePinnedToCore(
+                FetchTask, "codex_fetch", 4096, context, 3, nullptr, 0) != pdPASS) {
+            delete context;
+            s_widget_fetch_busy = false;
+            refresh_running_ = false;
+            deferred_force_ = force;
+            lv_timer_set_period(refresh_timer_, 1000);
+            lv_label_set_text(status_, "Unable to start refresh");
+            AddSystemLog("ERROR", "codex", "Fetch task create failed (internal=%u, psram=%u)",
+                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        }
+    }
+
+    static void FetchTask(void *data)
+    {
+        auto *context = static_cast<FetchContext *>(data);
+        CodexCreditApp *app = context->app;
+        std::string url = std::string(CONFIG_DOMOS_AI_HTTP_BASE) + "/api/codex/usage";
+        if (context->force) url += "?force=true";
+        delete context;
+
+        bool ok = DownloadUrlToFile(url, kUsageTempPath);
+        if (ok) {
+            std::remove(kUsagePath);
+            ok = std::rename(kUsageTempPath, kUsagePath) == 0;
+        } else {
+            std::remove(kUsageTempPath);
+        }
+
+        auto *result = new FetchResult{app, ok};
+        if (lv_async_call([](void *value) {
+                auto *completed = static_cast<FetchResult *>(value);
+                completed->app->refresh_running_ = false;
+                if (completed->app->visible_) {
+                    if (completed->ok) completed->app->RenderCache();
+                    else lv_label_set_text(completed->app->status_, "Offline - cached usage");
+                }
+                delete completed;
+            }, result) != LV_RES_OK) {
+            app->refresh_running_ = false;
+            delete result;
+        }
+        s_widget_fetch_busy = false;
+        vTaskDelete(nullptr);
+    }
+
+    static const char *JsonText(cJSON *object, const char *name, const char *fallback)
+    {
+        cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+        return cJSON_IsString(item) ? item->valuestring : fallback;
+    }
+
+    static void RenderWindow(cJSON *window, lv_obj_t *percent, lv_obj_t *reset,
+                             lv_obj_t *bar)
+    {
+        if (!cJSON_IsObject(window)) return;
+        cJSON *remaining_item = cJSON_GetObjectItemCaseSensitive(window, "remaining_percent");
+        int remaining = cJSON_IsNumber(remaining_item) ? remaining_item->valueint : 0;
+        remaining = std::clamp(remaining, 0, 100);
+        char percentage[24];
+        char reset_text[48];
+        std::snprintf(percentage, sizeof(percentage), "%d%% LEFT", remaining);
+        std::snprintf(reset_text, sizeof(reset_text), "Reset %s",
+                      JsonText(window, "resets_label", "--"));
+        lv_label_set_text(percent, percentage);
+        lv_label_set_text(reset, reset_text);
+        lv_bar_set_value(bar, remaining, LV_ANIM_ON);
+        const uint32_t color = remaining <= 20 ? 0xef4444 : (remaining <= 50 ? 0xf59e0b : 0x22c55e);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(color), LV_PART_INDICATOR);
+    }
+
+    void RenderCache()
+    {
+        FILE *fp = std::fopen(kUsagePath, "rb");
+        if (fp == nullptr) return;
+        std::fseek(fp, 0, SEEK_END);
+        const long size = std::ftell(fp);
+        std::fseek(fp, 0, SEEK_SET);
+        if (size <= 0 || size > 8192) {
+            std::fclose(fp);
+            return;
+        }
+        std::vector<char> json(static_cast<size_t>(size) + 1, 0);
+        const size_t read = std::fread(json.data(), 1, static_cast<size_t>(size), fp);
+        std::fclose(fp);
+        if (read != static_cast<size_t>(size)) return;
+
+        cJSON *root = cJSON_Parse(json.data());
+        if (root == nullptr) return;
+        RenderWindow(cJSON_GetObjectItemCaseSensitive(root, "five_hour"),
+                     five_hour_percent_, five_hour_reset_, five_hour_bar_);
+        RenderWindow(cJSON_GetObjectItemCaseSensitive(root, "weekly"),
+                     weekly_percent_, weekly_reset_, weekly_bar_);
+
+        cJSON *full_reset = cJSON_GetObjectItemCaseSensitive(root, "full_reset");
+        if (cJSON_IsObject(full_reset)) {
+            std::string title = VietnameseToAscii(JsonText(full_reset, "title", "Weekly + 5 hr"));
+            constexpr const char *prefix = "Full reset (";
+            if (title.rfind(prefix, 0) == 0 && title.size() > std::strlen(prefix) && title.back() == ')') {
+                title = title.substr(std::strlen(prefix), title.size() - std::strlen(prefix) - 1);
+            }
+            cJSON *available = cJSON_GetObjectItemCaseSensitive(full_reset, "available");
+            if (!cJSON_IsTrue(available)) title = "Not available";
+            lv_label_set_text(reset_title_, title.c_str());
+            lv_label_set_text(reset_expiry_, cJSON_IsTrue(available)
+                ? JsonText(full_reset, "expires_label", "--") : "--");
+        }
+        cJSON *stale = cJSON_GetObjectItemCaseSensitive(root, "stale");
+        const char *updated = JsonText(root, "updated_label", "--");
+        char status[48];
+        std::snprintf(status, sizeof(status), "%s%s",
+                      cJSON_IsTrue(stale) ? "Cached " : "Updated ", updated);
+        lv_label_set_text(status_, status);
+        cJSON_Delete(root);
+    }
+
+    lv_obj_t *five_hour_percent_ = nullptr;
+    lv_obj_t *five_hour_reset_ = nullptr;
+    lv_obj_t *five_hour_bar_ = nullptr;
+    lv_obj_t *weekly_percent_ = nullptr;
+    lv_obj_t *weekly_reset_ = nullptr;
+    lv_obj_t *weekly_bar_ = nullptr;
+    lv_obj_t *reset_title_ = nullptr;
+    lv_obj_t *reset_expiry_ = nullptr;
+    lv_obj_t *status_ = nullptr;
+    lv_timer_t *refresh_timer_ = nullptr;
+    std::atomic<bool> refresh_running_{false};
+    bool deferred_force_ = false;
+    bool visible_ = false;
+};
+
+
 class DashboardApp final : public ScreenApp {
 public:
     using ScreenApp::ScreenApp;
@@ -1275,28 +1812,27 @@ public:
         lv_obj_align(kb_, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_keyboard_set_textarea(kb_, ta_ssid_);
 
-        // When Ready (Enter/Checkmark) or Cancel button on LVGL keyboard is clicked
+        // Keyboard completion only hides the keyboard. Connecting is an
+        // explicit action so credentials are never discarded accidentally.
         lv_obj_add_event_cb(kb_, [](lv_event_t *e) {
-            uint32_t btn_id = lv_btnmatrix_get_selected_btn(lv_event_get_target(e));
-            const char *txt = lv_btnmatrix_get_btn_text(lv_event_get_target(e), btn_id);
-            if (txt != nullptr && (std::strcmp(txt, LV_SYMBOL_KEYBOARD) == 0 || std::strcmp(txt, LV_SYMBOL_CLOSE) == 0)) {
-                auto *app = static_cast<WifiSetupApp *>(lv_event_get_user_data(e));
-                app->manager_.CloseCurrent();
-            }
+            auto *app = static_cast<WifiSetupApp *>(lv_event_get_user_data(e));
+            lv_obj_add_flag(app->kb_, LV_OBJ_FLAG_HIDDEN);
         }, LV_EVENT_READY, this);
         lv_obj_add_event_cb(kb_, [](lv_event_t *e) {
             auto *app = static_cast<WifiSetupApp *>(lv_event_get_user_data(e));
-            app->manager_.CloseCurrent();
+            lv_obj_add_flag(app->kb_, LV_OBJ_FLAG_HIDDEN);
         }, LV_EVENT_CANCEL, this);
 
         lv_obj_add_event_cb(ta_ssid_, [](lv_event_t *e) {
             auto *app = static_cast<WifiSetupApp *>(lv_event_get_user_data(e));
             lv_keyboard_set_textarea(app->kb_, app->ta_ssid_);
+            lv_obj_clear_flag(app->kb_, LV_OBJ_FLAG_HIDDEN);
         }, LV_EVENT_FOCUSED, this);
 
         lv_obj_add_event_cb(ta_pass_, [](lv_event_t *e) {
             auto *app = static_cast<WifiSetupApp *>(lv_event_get_user_data(e));
             lv_keyboard_set_textarea(app->kb_, app->ta_pass_);
+            lv_obj_clear_flag(app->kb_, LV_OBJ_FLAG_HIDDEN);
         }, LV_EVENT_FOCUSED, this);
 
 
@@ -1323,8 +1859,11 @@ private:
         const char *ssid = lv_textarea_get_text(app->ta_ssid_);
         const char *pass = lv_textarea_get_text(app->ta_pass_);
         if (ssid != nullptr && ssid[0] != '\0') {
-            app->manager_.Wifi()->ConnectTo(ssid, pass != nullptr ? pass : "");
-            lv_label_set_text(app->status_label_, "Connecting to Wi-Fi...");
+            const bool started = app->manager_.Wifi()->ConnectTo(
+                ssid, pass != nullptr ? pass : "");
+            lv_label_set_text(app->status_label_, started
+                ? "Connecting to Wi-Fi..." : "Unable to start connection");
+            lv_obj_add_flag(app->kb_, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_label_set_text(app->status_label_, "SSID cannot be empty!");
         }
@@ -1335,6 +1874,11 @@ private:
         if (manager_.Wifi()->Connected()) {
             char buf[64];
             std::snprintf(buf, sizeof(buf), "OK: %s (%s)", manager_.Wifi()->Ssid(), manager_.Wifi()->IpAddress());
+            lv_label_set_text(status_label_, buf);
+        } else if (manager_.Wifi()->ConnectionFailed()) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "Connection failed (reason %d)",
+                          manager_.Wifi()->LastDisconnectReason());
             lv_label_set_text(status_label_, buf);
         }
     }
@@ -1702,6 +2246,21 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
     media_     = media;
     storage_   = storage;
     assistant_ = assistant;
+    launch_queue_ = xQueueCreate(8, sizeof(AppLaunchRequest));
+    if (launch_queue_ == nullptr) return false;
+    if (lv_timer_create([](lv_timer_t *timer) {
+            auto *manager = static_cast<AppManager *>(timer->user_data);
+            AppLaunchRequest request{};
+            // Bounded work on the LVGL task; producers never touch LVGL.
+            for (unsigned i = 0; i < 8 &&
+                 xQueueReceive(static_cast<QueueHandle_t>(manager->launch_queue_), &request, 0) == pdTRUE; ++i) {
+                manager->Launch(request.app);
+            }
+        }, 20, this) == nullptr) {
+        vQueueDelete(static_cast<QueueHandle_t>(launch_queue_));
+        launch_queue_ = nullptr;
+        return false;
+    }
     if (mqtt_ != nullptr) {
         mqtt_->SetMessageHandler([this](const char *topic, size_t topic_len,
                                         const char *payload, size_t payload_len) {
@@ -1718,6 +2277,8 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
     static LauncherApp launcher(*this);
     static ClockApp clock(*this);
     static WallpaperApp wallpaper(*this);
+    static ManchesterUnitedApp man_utd(*this);
+    static CodexCreditApp codex_credit(*this);
     static DashboardApp dashboard(*this);
     static SettingsApp settings(*this);
     static WifiSetupApp wifi_setup(*this);
@@ -1727,6 +2288,8 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
     Register(&launcher);
     Register(&clock);
     Register(&wallpaper);
+    Register(&man_utd);
+    Register(&codex_credit);
     Register(&dashboard);
     Register(&settings);
     Register(&wifi_setup);
@@ -1758,18 +2321,10 @@ void AppManager::Launch(const std::string &app)
 
 void AppManager::RequestLaunch(const std::string &app)
 {
-    struct LaunchRequest {
-        AppManager *manager;
-        std::string app;
-    };
-
-    auto *request = new LaunchRequest{this, app};
-    if (lv_async_call([](void *data) {
-            auto *pending = static_cast<LaunchRequest *>(data);
-            pending->manager->Launch(pending->app);
-            delete pending;
-        }, request) != LV_RES_OK) {
-        delete request;
+    AppLaunchRequest request{};
+    if (launch_queue_ == nullptr || app.empty() || app.size() >= sizeof(request.app)) return;
+    std::memcpy(request.app, app.c_str(), app.size() + 1);
+    if (xQueueSend(static_cast<QueueHandle_t>(launch_queue_), &request, 0) != pdTRUE) {
         ESP_LOGE("apps", "Unable to queue launch for '%s'", app.c_str());
     }
 }
@@ -1785,7 +2340,7 @@ void AppManager::CloseCurrent()
 
 void AppManager::ShowNextHomePage()
 {
-    static const char *pages[] = {"clock", "dashboard", "smart-home", "assistant"};
+    static const char *pages[] = {"clock", "dashboard", "smart-home", "assistant", "man-utd", "codex-credit"};
     size_t current_page = 0;
     for (size_t index = 0; index < sizeof(pages) / sizeof(pages[0]); ++index) {
         if (current_ != nullptr && std::string(current_->Id()) == pages[index]) current_page = index;

@@ -25,15 +25,16 @@ void EventDispatcher(void *context)
     }
 }
 
-struct DeferredMqttContext {
+struct DeferredNetworkContext {
     WifiService *wifi;
     MqttService *mqtt;
     EventBus *events;
+    AssistantService *assistant;
 };
 
-void StartMqttWhenWifiReady(void *context)
+void StartNetworkClientsWhenWifiReady(void *context)
 {
-    auto *services = static_cast<DeferredMqttContext *>(context);
+    auto *services = static_cast<DeferredNetworkContext *>(context);
     while (!services->wifi->Connected()) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -41,6 +42,9 @@ void StartMqttWhenWifiReady(void *context)
     if (!services->mqtt->Start(services->events)) {
         ESP_LOGW("domos", "MQTT service did not start");
     }
+    // Voice belongs to the device, not the Assistant screen. WsClient handles
+    // reconnects after Wi-Fi/server outages without opening another session.
+    if (services->assistant != nullptr) services->assistant->OpenAudioChannel();
     vTaskDelete(nullptr);
 }
 } // namespace
@@ -75,8 +79,6 @@ extern "C" void app_main(void)
         return;
     }
 
-    tasks.Start("event_bus", EventDispatcher, &events, 4096, 4);
-
     if (!wifi.Start()) ESP_LOGW("domos", "Wi-Fi service did not start");
     ota.Start(&events);
     media.Start(&events);
@@ -97,20 +99,28 @@ extern "C" void app_main(void)
     asst_cfg.device_id  = nullptr;  // auto-filled from MAC
     asst_cfg.client_id  = "domos-es3c28p-001";
 
-    if (!assistant.Start(&board, &events, asst_cfg)) {
+    const bool assistant_ready = assistant.Start(&board, &events, asst_cfg);
+    if (!assistant_ready) {
         ESP_LOGW("domos", "AssistantService did not start");
     }
-    apps.Start(&board, &wifi, &mqtt, &ota, &media, &storage, &assistant);
+    if (!apps.Start(&board, &wifi, &mqtt, &ota, &media, &storage, &assistant)) {
+        ESP_LOGE("domos", "AppManager did not start");
+        return;
+    }
     assistant.SetAppManager(&apps);
+    events.Subscribe(EventType::AppLaunchRequested, [](const DomosEvent &event, void *context) {
+        static_cast<AppManager *>(context)->RequestLaunch(event.data);
+    }, &apps);
+    tasks.Start("event_bus", EventDispatcher, &events, 4096, 4);
 
-    // A fixed IP is configured before association, so starting a TCP client at
-    // boot would let lwIP transmit while the Wi-Fi link is still negotiating.
-    // Defer MQTT until the station is fully associated and IP_EVENT_GOT_IP has
+    // Starting a TCP client at boot would let lwIP transmit while the Wi-Fi
+    // link is still negotiating either its fixed DomOS IP or a DHCP lease.
+    // Defer network clients until the station is fully associated and IP_EVENT_GOT_IP has
     // been received. This also guarantees AppManager has installed its message
     // handler before the broker can deliver commands.
-    static DeferredMqttContext mqtt_context{&wifi, &mqtt, &events};
-    if (!tasks.Start("mqtt_start", StartMqttWhenWifiReady, &mqtt_context, 3072, 3)) {
-        ESP_LOGW("domos", "MQTT deferred-start task did not start");
+    static DeferredNetworkContext network_context{&wifi, &mqtt, &events, assistant_ready ? &assistant : nullptr};
+    if (!tasks.Start("network_start", StartNetworkClientsWhenWifiReady, &network_context, 4096, 3)) {
+        ESP_LOGW("domos", "Network deferred-start task did not start");
     }
 
     board.StartLvglTask();

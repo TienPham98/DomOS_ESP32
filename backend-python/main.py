@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, Header, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
@@ -13,8 +13,12 @@ from config import settings
 from services.openrouter_voice_service import (
     conversation_store,
     handle_openrouter_voice,
+    primary_llm_model,
+    primary_llm_provider,
     voice_registry,
 )
+from services.football_service import football_service
+from services.codex_usage_service import CodexUsageError, codex_usage_service
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DOMOS_DEBUG else logging.INFO,
@@ -49,14 +53,16 @@ async def health_check() -> dict:
         "status": "online",
         "service": settings.APP_NAME,
         "version": "0.5.0",
-        "provider": "openrouter",
+        "provider": primary_llm_provider(),
         "local_ai": False,
         "active_sessions": voice_registry.count,
-        "model": settings.OPENROUTER_MODEL,
+        "model": primary_llm_model(),
         "audio_model": settings.OPENROUTER_AUDIO_MODEL,
         "stt_provider": settings.STT_PROVIDER,
         "tts_provider": settings.TTS_PROVIDER,
-        "api_key_configured": bool(settings.OPENROUTER_API_KEY),
+        "api_key_configured": primary_llm_provider() != "unconfigured",
+        "openai_key_configured": bool(settings.OPENAI_API_KEY),
+        "openrouter_key_configured": bool(settings.OPENROUTER_API_KEY),
         "memory": "sqlite",
     }
 
@@ -70,6 +76,48 @@ async def voice_stream_websocket(websocket: WebSocket) -> None:
 async def list_conversations(device_id: str | None = None, limit: int = 50) -> dict:
     items = await conversation_store.list_turns(device_id=device_id, limit=limit)
     return {"items": items, "count": len(items)}
+
+
+@app.get("/api/football/manchester-united")
+async def manchester_united_schedule(force: bool = False) -> dict:
+    try:
+        return await football_service.get_schedule(force=force)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/football/manchester-united/background.jpg")
+async def manchester_united_background() -> Response:
+    try:
+        content = await football_service.get_background_jpeg()
+    except (RuntimeError, httpx.HTTPError, OSError, ValueError) as exc:
+        logger.warning("Manchester United background unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="Club background unavailable") from exc
+    return Response(content=content, media_type="image/jpeg")
+
+
+@app.get("/api/codex/usage")
+async def codex_usage(force: bool = False) -> dict:
+    try:
+        return await codex_usage_service.get_usage(force=force)
+    except CodexUsageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/codex/usage/sync")
+async def sync_codex_usage(
+    snapshot: dict, authorization: str | None = Header(default=None)
+) -> dict:
+    expected = settings.CODEX_USAGE_SYNC_TOKEN
+    if not expected:
+        raise HTTPException(status_code=503, detail="Codex usage sync is disabled")
+    if authorization != f"Bearer {expected}":
+        raise HTTPException(status_code=401, detail="Invalid sync token")
+    try:
+        stored = await codex_usage_service.store_synced(snapshot)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "updated_at": stored["updated_at"]}
 
 
 @app.get("/api/wallpapers/slideshow")

@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import warnings
 from array import array
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -12,10 +13,15 @@ from starlette.exceptions import StarletteDeprecationWarning
 warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
 
 from fastapi.testclient import TestClient  # noqa: E402
+from PIL import Image  # noqa: E402
 
 import main
+from config import Settings, settings
 from services.conversation_store import ConversationStore
+from services.codex_usage_service import CodexUsageService
+from services.football_service import FootballService
 from services.openrouter_voice_service import (
+    OpenAIAPIError,
     PCM_FRAME_BYTES,
     VoiceRegistry,
     VoiceSession,
@@ -36,13 +42,44 @@ class FakeWebSocket:
 
 
 class GatewayApiTests(unittest.TestCase):
+    def test_external_service_configuration_has_no_code_defaults(self):
+        env_only_fields = (
+            "HOST",
+            "PORT",
+            "OPENROUTER_BASE_URL",
+            "OPENROUTER_MODEL",
+            "OPENROUTER_AUDIO_MODEL",
+            "OPENROUTER_TIMEOUT_SEC",
+            "OPENROUTER_HTTP_REFERER",
+            "OPENAI_BASE_URL",
+            "OPENAI_MODEL",
+            "OPENAI_STT_MODEL",
+            "OPENAI_TIMEOUT_SEC",
+            "LLM_PROVIDER_ORDER",
+            "STT_PROVIDER",
+            "STT_LANGUAGE",
+            "STT_OPENROUTER_FALLBACK",
+            "TTS_PROVIDER",
+            "TTS_VOICE",
+            "TTS_TIMEOUT_SEC",
+            "FOOTBALL_DATA_BASE_URL",
+            "MANCHESTER_UNITED_BADGE_URL",
+            "MQTT_BROKER_HOST",
+            "MQTT_BROKER_PORT",
+            "MQTT_CLIENT_ID",
+        )
+
+        for field_name in env_only_fields:
+            with self.subTest(field=field_name):
+                self.assertTrue(Settings.model_fields[field_name].is_required())
+
     def test_health_reports_cloud_only_voice_stack(self):
         with TestClient(main.app) as client:
             response = client.get("/health")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["provider"], "openrouter")
+        self.assertEqual(payload["provider"], "openai")
         self.assertFalse(payload["local_ai"])
         self.assertEqual(payload["memory"], "sqlite")
         self.assertIn("stt_provider", payload)
@@ -93,6 +130,119 @@ class GatewayApiTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaises(ValueError):
                 validate_dom_hello(message)
 
+    def test_manchester_united_endpoint_returns_next_fixture(self):
+        fixture = {
+            "team": "Manchester United",
+            "stale": False,
+            "next_match": {
+                "home_team": "Manchester United",
+                "away_team": "Arsenal",
+                "local_date": "30/08/2026",
+                "local_time": "22:30",
+            },
+        }
+        with patch.object(
+            main.football_service, "get_schedule", AsyncMock(return_value=fixture)
+        ):
+            with TestClient(main.app) as client:
+                response = client.get("/api/football/manchester-united")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["next_match"]["away_team"], "Arsenal")
+
+    def test_manchester_united_endpoint_reports_provider_failure(self):
+        with patch.object(
+            main.football_service,
+            "get_schedule",
+            AsyncMock(side_effect=RuntimeError("unavailable")),
+        ):
+            with TestClient(main.app) as client:
+                response = client.get("/api/football/manchester-united")
+
+        self.assertEqual(response.status_code, 503)
+
+    def test_manchester_united_background_is_jpeg(self):
+        with patch.object(
+            main.football_service,
+            "get_background_jpeg",
+            AsyncMock(return_value=b"jpeg-data"),
+        ):
+            with TestClient(main.app) as client:
+                response = client.get("/api/football/manchester-united/background.jpg")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/jpeg")
+
+    def test_manchester_united_background_matches_lcd_resolution(self):
+        source = BytesIO()
+        Image.new("RGBA", (32, 32), (218, 41, 28, 255)).save(source, format="PNG")
+
+        rendered = FootballService._render_background(source.getvalue())
+        with Image.open(BytesIO(rendered)) as background:
+            self.assertEqual(background.format, "JPEG")
+            self.assertEqual(background.size, (320, 240))
+
+    def test_codex_usage_endpoint_returns_normalized_snapshot(self):
+        snapshot = {
+            "five_hour": {"remaining_percent": 82, "resets_label": "03/09 21:13"},
+            "weekly": {"remaining_percent": 97, "resets_label": "10/09 16:13"},
+            "full_reset": {
+                "available": True,
+                "title": "Full reset (Weekly + 5 hr)",
+                "expires_label": "21/09 05:00 GMT+07:00",
+            },
+            "updated_at": 1,
+        }
+        with patch.object(
+            main.codex_usage_service, "get_usage", AsyncMock(return_value=snapshot)
+        ):
+            with TestClient(main.app) as client:
+                response = client.get("/api/codex/usage")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["five_hour"]["remaining_percent"], 82)
+
+    def test_codex_usage_sync_requires_bearer_token(self):
+        with patch.object(main.settings, "CODEX_USAGE_SYNC_TOKEN", "sync-secret"):
+            with TestClient(main.app) as client:
+                response = client.post("/api/codex/usage/sync", json={})
+        self.assertEqual(response.status_code, 401)
+
+    def test_codex_usage_normalizes_five_hour_weekly_and_reset_credit(self):
+        raw = {
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "planType": "plus",
+                    "primary": {
+                        "usedPercent": 18,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1788444780,
+                    },
+                    "secondary": {
+                        "usedPercent": 3,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1789031580,
+                    },
+                }
+            },
+            "rateLimitResetCredits": {
+                "credits": [
+                    {
+                        "status": "available",
+                        "title": "Full reset (Weekly + 5 hr)",
+                        "expiresAt": 1789941600,
+                    }
+                ]
+            },
+        }
+
+        snapshot = CodexUsageService.normalize(raw)
+
+        self.assertEqual(snapshot["five_hour"]["remaining_percent"], 82)
+        self.assertEqual(snapshot["weekly"]["remaining_percent"], 97)
+        self.assertTrue(snapshot["full_reset"]["available"])
+        self.assertEqual(snapshot["full_reset"]["title"], "Full reset (Weekly + 5 hr)")
+
 
 class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_registry_add_remove_is_idempotent(self):
@@ -121,11 +271,12 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         websocket = FakeWebSocket()
         session = VoiceSession(websocket, "board", "session")
         session.state = "LISTENING"
-        loud = array("h", [1200] * (PCM_FRAME_BYTES // 2)).tobytes()
+        loud = array("h", ([-1200, 1200] * (PCM_FRAME_BYTES // 4))).tobytes()
         quiet = bytes(PCM_FRAME_BYTES)
         session.start_pipeline = AsyncMock()
 
-        await session.consume_audio(quiet)
+        for _ in range(5):
+            await session.consume_audio(quiet)
         self.assertFalse(session.speech_started)
         for _ in range(3):
             await session.consume_audio(loud)
@@ -146,6 +297,107 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(websocket.text_messages[0]["type"], "tts")
         self.assertEqual(websocket.text_messages[0]["state"], "stop")
         self.assertEqual(websocket.text_messages[-2]["state"], "wake")
+
+    async def test_openai_stt_requires_api_key_without_sending_audio(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        with patch.object(settings, "OPENAI_API_KEY", ""):
+            with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY"):
+                await session._transcribe_openai(bytes(PCM_FRAME_BYTES), "vi-VN")
+
+    async def test_llm_falls_back_only_when_openai_credit_is_exhausted(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session._openai = AsyncMock(side_effect=OpenAIAPIError(
+            "chat", 429, "insufficient_quota", "insufficient_quota",
+            "You have no credits remaining", "req_quota",
+        ))
+        session._openrouter = AsyncMock(return_value={"choices": [{"message": {"content": "ok"}}]})
+        with (
+            patch.object(settings, "LLM_PROVIDER_ORDER", "openai,openrouter"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+        ):
+            response = await session._llm({"messages": []})
+
+        self.assertEqual(response["choices"][0]["message"]["content"], "ok")
+        self.assertEqual(session._openrouter.await_args.args[0]["model"], settings.OPENROUTER_MODEL)
+        self.assertEqual(session.last_llm_provider, "openrouter")
+        self.assertEqual(session.last_llm_model, settings.OPENROUTER_MODEL)
+        self.assertFalse(session.provider_ready("openai-llm-quota"))
+
+    async def test_llm_does_not_fallback_on_temporary_openai_rate_limit(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        error = OpenAIAPIError(
+            "chat", 429, "rate_limit_error", "rate_limit_exceeded",
+            "Too many requests", "req_rate",
+        )
+        session._openai = AsyncMock(side_effect=error)
+        session._openrouter = AsyncMock()
+        with (
+            patch.object(settings, "LLM_PROVIDER_ORDER", "openai,openrouter"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+        ):
+            with self.assertRaises(OpenAIAPIError) as raised:
+                await session._llm({"messages": []})
+
+        self.assertEqual(raised.exception.request_id, "req_rate")
+        session._openrouter.assert_not_awaited()
+
+    async def test_llm_prefers_openai_and_records_actual_model(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session._openai = AsyncMock(return_value={"choices": [{"message": {"content": "xin chào"}}]})
+        session._openrouter = AsyncMock()
+        with (
+            patch.object(settings, "LLM_PROVIDER_ORDER", "openai,openrouter"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+        ):
+            response = await session._llm({"messages": []})
+
+        self.assertEqual(response["choices"][0]["message"]["content"], "xin chào")
+        self.assertEqual(session.last_llm_provider, "openai")
+        self.assertEqual(session.last_llm_model, settings.OPENAI_MODEL)
+        session._openrouter.assert_not_awaited()
+
+    async def test_confirmed_quota_circuit_avoids_repeating_failed_openai_calls(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session.defer_provider("openai-llm-quota")
+        session._openai = AsyncMock()
+        session._openrouter = AsyncMock(
+            return_value={"choices": [{"message": {"content": "fallback"}}]}
+        )
+        with (
+            patch.object(settings, "LLM_PROVIDER_ORDER", "openai,openrouter"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+        ):
+            response = await session._llm({"messages": []})
+
+        self.assertEqual(response["choices"][0]["message"]["content"], "fallback")
+        session._openai.assert_not_awaited()
+        session._openrouter.assert_awaited_once()
+
+    async def test_openai_stt_failure_does_not_disable_openai_llm(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session._transcribe_openai = AsyncMock(side_effect=RuntimeError("rate limited"))
+        session._transcribe_openrouter = AsyncMock()
+        session._transcribe_google = AsyncMock(return_value="Hey Dom")
+        session._openai = AsyncMock(return_value={"choices": [{"message": {"content": "ok"}}]})
+        session._openrouter = AsyncMock()
+        with (
+            patch.object(settings, "STT_PROVIDER", "openai"),
+            patch.object(settings, "LLM_PROVIDER_ORDER", "openai,openrouter"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+        ):
+            transcript = await session.transcribe(bytes(PCM_FRAME_BYTES))
+            await session._llm({"messages": []})
+
+        self.assertEqual(transcript, "Hey Dom")
+        session._transcribe_google.assert_awaited_once()
+        session._transcribe_openrouter.assert_not_awaited()
+        session._openai.assert_awaited_once()
+        session._openrouter.assert_not_awaited()
 
 
 if __name__ == "__main__":

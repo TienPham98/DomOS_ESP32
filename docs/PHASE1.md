@@ -13,7 +13,7 @@ Phase 1 là nền tảng phần cứng đã được triển khai cho đúng boa
 | Backlight | GPIO45 LEDC 5 kHz/10-bit | brightness 0–100 qua MCP |
 | Audio | ES8311, I2S0 16 kHz, PA GPIO1 active-low | mic/loa hoạt động |
 | LittleFS | partition 7 MB | wallpaper/cache/config |
-| Wi-Fi | STA `Dom_12`, static `<DEVICE_IP>` | board API truy cập được |
+| Wi-Fi | `Dom_12` dùng static `<DEVICE_IP>`; SSID khác dùng DHCP | board API truy cập được |
 | HTTP server | port 80 | status/log/app API |
 | Launcher | LVGL app manager | mở clock/wallpaper/assistant |
 
@@ -46,7 +46,7 @@ idf.py -p COM5 -b 460800 flash monitor
 ## Checklist sau flash
 
 1. Serial log không báo lỗi init display/touch/ES8311.
-2. Board kết nối SSID `Dom_12` và nhận `<DEVICE_IP>`.
+2. Board kết nối SSID đã lưu; `Dom_12` dùng `<DEVICE_IP>`, mạng khác nhận IP qua DHCP.
 3. `GET http://<DEVICE_IP>/api/status` trả firmware `0.3.5`.
 4. `GET /api/logs` trả JSON array.
 5. Launcher phản hồi touch.

@@ -71,6 +71,8 @@ Key files:
 - WebSocket callbacks (`OnWsText`, `OnWsBinary`, `OnWsConnect`) run in the ESP WebSocket client task — use mutex for shared state.
 - The `EventBus` must be used to notify other subsystems (AppManager, UI) of assistant state changes.
 - Do not add board-specific includes to `assistant_service.cpp` beyond `board/es3c28p/board_es3c28p.h`.
+- Wi-Fi credentials are user-configurable: `Dom_12` keeps the dedicated fixed
+  IP configuration, while any other SSID must use DHCP.
 
 ### Python AI Gateway
 - The WebSocket endpoint path is `/api/v1/voice/stream` — do NOT change this path.
@@ -117,7 +119,7 @@ The entire DomOS ecosystem operates on a fixed, dedicated IP configuration:
 | ├── Python AI Voice Gateway | `http://<HOST_IP>:8000` | WS Voice Protocol: `ws://<HOST_IP>:8000/api/v1/voice/stream` |
 | ├── Go Core Backend | `http://<HOST_IP>:8081` | Device registry, REST API, MQTT (`:8081`) |
 | └── Next.js Dashboard | `http://<HOST_IP>:3000` | Web UI Control (`http://localhost:3000`) |
-| **ESP32-S3 Hardware Board** | `<DEVICE_IP>` | Client terminal (Wi-Fi STA mode on SSID `Dom_12`) |
+| **ESP32-S3 Hardware Board** | `<DEVICE_IP>` | Client terminal on `Dom_12`; other SSIDs use DHCP |
 | └── ESP32 HTTP Server | `http://<DEVICE_IP>:80` | Status (`/api/status`), Wallpaper (`/api/wallpaper`), OTA |
 
 > **STRICT RULE FOR ALL AGENTS:**

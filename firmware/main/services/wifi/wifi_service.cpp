@@ -1,5 +1,6 @@
 #include "wifi_service.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,6 +31,8 @@ char s_ip[16] = "--";
 int8_t s_rssi = 0;
 int s_retries = 0;
 bool s_wifi_inited = false;
+std::atomic<bool> s_connection_failed{false};
+std::atomic<int> s_last_disconnect_reason{0};
 
 bool ParseIpv4(const char *text, esp_ip4_addr_t *out)
 {
@@ -38,6 +41,67 @@ bool ParseIpv4(const char *text, esp_ip4_addr_t *out)
     if (ip4addr_aton(text, &parsed) == 0) return false;
     out->addr = parsed.addr;
     return true;
+}
+
+bool ConfigureIpForSsid(const char *ssid)
+{
+    if (s_netif == nullptr || ssid == nullptr) return false;
+
+    const esp_err_t stop_result = esp_netif_dhcpc_stop(s_netif);
+    if (stop_result != ESP_OK &&
+        stop_result != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ESP_LOGE(TAG, "failed to stop DHCP client: %s", esp_err_to_name(stop_result));
+        return false;
+    }
+
+    if (std::strcmp(ssid, "Dom_12") != 0) {
+        esp_netif_ip_info_t empty_ip{};
+        if (esp_netif_set_ip_info(s_netif, &empty_ip) != ESP_OK) return false;
+        const esp_err_t start_result = esp_netif_dhcpc_start(s_netif);
+        if (start_result != ESP_OK &&
+            start_result != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+            ESP_LOGE(TAG, "failed to start DHCP client: %s", esp_err_to_name(start_result));
+            return false;
+        }
+        ESP_LOGI(TAG, "SSID '%s' will use DHCP", ssid);
+        return true;
+    }
+
+    // Preserve the original dedicated DomOS LAN behavior for Dom_12.
+    esp_netif_ip_info_t fixed_ip{};
+    if (!ParseIpv4(CONFIG_DOMOS_DEVICE_IP, &fixed_ip.ip) ||
+        !ParseIpv4(CONFIG_DOMOS_GATEWAY_IP, &fixed_ip.gw) ||
+        !ParseIpv4(CONFIG_DOMOS_NETMASK, &fixed_ip.netmask)) {
+        ESP_LOGE(TAG, "fixed DomOS network configuration is invalid");
+        return false;
+    }
+    if (esp_netif_set_ip_info(s_netif, &fixed_ip) != ESP_OK) return false;
+    esp_netif_dns_info_t dns{};
+    dns.ip.u_addr.ip4 = fixed_ip.gw;
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &dns);
+    ESP_LOGI(TAG, "SSID Dom_12 will use the configured fixed IP");
+    return true;
+}
+
+void CopyCredentials(const char *ssid, const char *password)
+{
+    std::strncpy(s_ssid, ssid, sizeof(s_ssid) - 1);
+    s_ssid[sizeof(s_ssid) - 1] = '\0';
+    std::strncpy(s_password, password, sizeof(s_password) - 1);
+    s_password[sizeof(s_password) - 1] = '\0';
+}
+
+void FillStationConfig(wifi_config_t *config)
+{
+    std::strncpy(reinterpret_cast<char *>(config->sta.ssid), s_ssid,
+                 sizeof(config->sta.ssid) - 1);
+    std::strncpy(reinterpret_cast<char *>(config->sta.password), s_password,
+                 sizeof(config->sta.password) - 1);
+    config->sta.threshold.authmode = s_password[0] == '\0'
+        ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+    config->sta.pmf_cfg.capable = true;
+    config->sta.pmf_cfg.required = false;
 }
 
 void StartSntp()
@@ -60,13 +124,23 @@ void OnWifiEvent(void *, esp_event_base_t event_base, int32_t event_id, void *ev
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(s_events, CONNECTED_BIT);
         std::snprintf(s_ip, sizeof(s_ip), "--");
-        if (s_retries++ < CONFIG_DOMOS_WIFI_MAX_RETRY) esp_wifi_connect();
+        const auto *event = static_cast<wifi_event_sta_disconnected_t *>(event_data);
+        s_last_disconnect_reason = event != nullptr ? event->reason : 0;
+        if (s_retries++ < CONFIG_DOMOS_WIFI_MAX_RETRY) {
+            esp_wifi_connect();
+        } else {
+            s_connection_failed = true;
+            ESP_LOGW(TAG, "connection to '%s' failed (reason=%d)", s_ssid,
+                     s_last_disconnect_reason.load());
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         const auto *event = static_cast<ip_event_got_ip_t *>(event_data);
         std::snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&event->ip_info.ip));
         wifi_ap_record_t ap_info{};
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) s_rssi = ap_info.rssi;
         s_retries = 0;
+        s_connection_failed = false;
+        s_last_disconnect_reason = 0;
         xEventGroupSetBits(s_events, CONNECTED_BIT);
         StartSntp();
         ESP_LOGI(TAG, "connected: SSID=%s IP=%s RSSI=%d", s_ssid, s_ip, s_rssi);
@@ -108,31 +182,10 @@ bool WifiService::Start()
     s_netif = esp_netif_create_default_wifi_sta();
     if (s_netif == nullptr) return false;
 
-    // DomOS uses a dedicated fixed-address LAN. The private address is injected
-    // from the root .env during firmware configuration.
-    const esp_err_t dhcp_result = esp_netif_dhcpc_stop(s_netif);
-    if (dhcp_result != ESP_OK && dhcp_result != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
-        ESP_LOGE(TAG, "failed to stop DHCP client: %s", esp_err_to_name(dhcp_result));
-        return false;
+    if (!LoadCredentialsFromNvs() && CONFIG_DOMOS_WIFI_SSID[0] != '\0') {
+        CopyCredentials(CONFIG_DOMOS_WIFI_SSID, CONFIG_DOMOS_WIFI_PASSWORD);
     }
-    esp_netif_ip_info_t fixed_ip{};
-    if (!ParseIpv4(CONFIG_DOMOS_DEVICE_IP, &fixed_ip.ip)) {
-        ESP_LOGE(TAG, "DOMOS_DEVICE_IP is missing or invalid");
-        return false;
-    }
-    if (!ParseIpv4(CONFIG_DOMOS_GATEWAY_IP, &fixed_ip.gw) ||
-        !ParseIpv4(CONFIG_DOMOS_NETMASK, &fixed_ip.netmask)) {
-        ESP_LOGE(TAG, "DOMOS_GATEWAY_IP or DOMOS_NETMASK is missing or invalid");
-        return false;
-    }
-    if (esp_netif_set_ip_info(s_netif, &fixed_ip) != ESP_OK) {
-        ESP_LOGE(TAG, "failed to configure the fixed device IP");
-        return false;
-    }
-    esp_netif_dns_info_t dns{};
-    dns.ip.u_addr.ip4 = fixed_ip.gw;
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &dns);
+    if (s_ssid[0] != '\0' && !ConfigureIpForSsid(s_ssid)) return false;
 
     const wifi_init_config_t init_config = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&init_config) != ESP_OK) return false;
@@ -140,32 +193,27 @@ bool WifiService::Start()
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &OnWifiEvent, nullptr, nullptr);
     s_wifi_inited = true;
 
-    if (LoadCredentialsFromNvs()) {
-        // Preserve the stored password, but keep the dedicated DomOS SSID fixed.
-        std::strncpy(s_ssid, "Dom_12", sizeof(s_ssid) - 1);
-    } else {
-        if (CONFIG_DOMOS_WIFI_SSID[0] != '\0') {
-            std::strncpy(s_ssid, CONFIG_DOMOS_WIFI_SSID, sizeof(s_ssid) - 1);
-            std::strncpy(s_password, CONFIG_DOMOS_WIFI_PASSWORD, sizeof(s_password) - 1);
-        }
-    }
-
     if (s_ssid[0] == '\0') {
-        ESP_LOGW(TAG, "Wi-Fi password not configured for Dom_12; use menuconfig or the touch UI");
+        ESP_LOGW(TAG, "Wi-Fi SSID is not configured; use menuconfig or the touch UI");
         return true;
     }
 
     wifi_config_t station_config{};
-    std::strncpy(reinterpret_cast<char *>(station_config.sta.ssid), s_ssid, sizeof(station_config.sta.ssid));
-    std::strncpy(reinterpret_cast<char *>(station_config.sta.password), s_password, sizeof(station_config.sta.password));
-    station_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    station_config.sta.pmf_cfg.capable = true;
-    station_config.sta.pmf_cfg.required = false;
+    FillStationConfig(&station_config);
 
     if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK ||
         esp_wifi_set_config(WIFI_IF_STA, &station_config) != ESP_OK ||
         esp_wifi_start() != ESP_OK) {
         return false;
+    }
+
+    // STA_START normally initiates this through OnWifiEvent. Starting the
+    // connection explicitly also covers boots where that asynchronous event
+    // is delayed or missed while the other subsystems are being created.
+    const esp_err_t connect_result = esp_wifi_connect();
+    if (connect_result != ESP_OK) {
+        ESP_LOGW(TAG, "initial Wi-Fi connect returned %s; event handler will retry",
+                 esp_err_to_name(connect_result));
     }
 
     // Continuous 60 ms PCM streaming is latency-sensitive. Modem sleep can
@@ -177,32 +225,34 @@ bool WifiService::Start()
 bool WifiService::ConnectTo(const char *ssid, const char *password)
 {
     if (ssid == nullptr || password == nullptr || !s_wifi_inited) return false;
-    if (std::strcmp(ssid, "Dom_12") != 0) {
-        ESP_LOGW(TAG, "Rejected SSID '%s': DomOS network is fixed to Dom_12", ssid);
-        return false;
-    }
-    std::strncpy(s_ssid, "Dom_12", sizeof(s_ssid) - 1);
-    std::strncpy(s_password, password, sizeof(s_password) - 1);
+    if (ssid[0] == '\0' || std::strlen(ssid) >= sizeof(s_ssid) ||
+        std::strlen(password) >= sizeof(s_password)) return false;
+    CopyCredentials(ssid, password);
     SaveCredentialsToNvs(ssid, password);
 
     s_retries = 0;
+    s_connection_failed = false;
+    s_last_disconnect_reason = 0;
     xEventGroupClearBits(s_events, CONNECTED_BIT);
-    esp_wifi_stop();
+    std::snprintf(s_ip, sizeof(s_ip), "--");
+    const esp_err_t stop_wifi_result = esp_wifi_stop();
+    if (stop_wifi_result != ESP_OK && stop_wifi_result != ESP_ERR_WIFI_NOT_STARTED) {
+        return false;
+    }
+    if (!ConfigureIpForSsid(s_ssid)) return false;
 
     wifi_config_t station_config{};
-    std::strncpy(reinterpret_cast<char *>(station_config.sta.ssid), s_ssid, sizeof(station_config.sta.ssid));
-    std::strncpy(reinterpret_cast<char *>(station_config.sta.password), s_password, sizeof(station_config.sta.password));
-    station_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    station_config.sta.pmf_cfg.capable = true;
-    station_config.sta.pmf_cfg.required = false;
+    FillStationConfig(&station_config);
 
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_config(WIFI_IF_STA, &station_config);
-    if (esp_wifi_start() != ESP_OK) return false;
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK ||
+        esp_wifi_set_config(WIFI_IF_STA, &station_config) != ESP_OK ||
+        esp_wifi_start() != ESP_OK) return false;
     return esp_wifi_set_ps(WIFI_PS_NONE) == ESP_OK;
 }
 
 bool WifiService::Connected() const { return s_events != nullptr && (xEventGroupGetBits(s_events) & CONNECTED_BIT); }
+bool WifiService::ConnectionFailed() const { return s_connection_failed.load(); }
+int WifiService::LastDisconnectReason() const { return s_last_disconnect_reason.load(); }
 const char *WifiService::Ssid() const { return s_ssid[0] ? s_ssid : "Not configured"; }
 const char *WifiService::IpAddress() const { return s_ip; }
 int8_t WifiService::Rssi() const { return s_rssi; }

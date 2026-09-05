@@ -9,6 +9,7 @@ FastAPI gateway kết nối ESP32-S3 với các dịch vụ AI cloud. Service nh
 - HTTP: `http://<HOST_IP>:8000`
 - Voice WebSocket: `ws://<HOST_IP>:8000/api/v1/voice/stream`
 - AI: OpenRouter, mặc định `openrouter/free`
+- LLM chính: OpenAI; OpenRouter chỉ fallback khi OpenAI trả lỗi hết credit/quota
 - Local AI: tắt hoàn toàn
 - STT mặc định: Google Web Speech
 - TTS mặc định: Google TTS; có Edge TTS
@@ -25,7 +26,11 @@ backend-python/
 ├── requirements.txt
 ├── services/
 │   ├── openrouter_voice_service.py      session, VAD, STT, LLM, MCP, TTS
+│   ├── app_commands.py                  nhận diện tên/lệnh mở app, xác nhận MCP
+│   ├── football_service.py              lịch thi đấu MU, cache và ảnh nền LCD
+│   ├── codex_usage_service.py           đọc/cache hạn mức Codex đã chuẩn hóa
 │   └── conversation_store.py            SQLite conversation/tool trace
+├── scripts/sync_codex_usage.py          đồng bộ usage từ PC lên gateway cloud
 ├── tests/test_voice_protocol.py
 └── data/conversations.db                 tạo tự động
 ```
@@ -58,8 +63,14 @@ OPENROUTER_MODEL=openrouter/free
 OPENROUTER_AUDIO_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
 OPENROUTER_TIMEOUT_SEC=60
 
-STT_PROVIDER=google-web
+STT_PROVIDER=openai
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_STT_MODEL=gpt-4o-mini-transcribe
+LLM_PROVIDER_ORDER=openai,openrouter
 STT_LANGUAGE=vi-VN
+WAKE_STT_PROVIDER=google-web
+WAKE_STT_TIMEOUT_SEC=3
 TTS_PROVIDER=google
 TTS_VOICE=vi-VN-HoaiMyNeural
 TTS_TIMEOUT_SEC=15
@@ -73,7 +84,24 @@ MQTT_PASSWORD=
 
 VOICE_SESSION_TIMEOUT_SEC=30
 VOICE_AUTH_TOKEN=
+
+FOOTBALL_DATA_API_KEY=thay_bang_football_data_key
+FOOTBALL_DATA_BASE_URL=<FOOTBALL_DATA_API_BASE_URL>
+FOOTBALL_TEAM_ID=66
+FOOTBALL_TIMEZONE=Asia/Bangkok
+FOOTBALL_CACHE_TTL_SECONDS=86400
+MANCHESTER_UNITED_BADGE_URL=<MANCHESTER_UNITED_BADGE_IMAGE_URL>
+
+CODEX_USAGE_LOCAL_ENABLED=True
+CODEX_CLI_PATH=codex
+CODEX_USAGE_CACHE_PATH=data/codex_usage.json
+CODEX_USAGE_TIMEZONE=Asia/Bangkok
+CODEX_USAGE_REFRESH_SECONDS=60
+CODEX_USAGE_STALE_SECONDS=900
+CODEX_USAGE_SYNC_TOKEN=
 ```
+
+Tạo API key miễn phí tại football-data.org rồi chỉ lưu key và URL thật trong `.env`. Gateway cập nhật lịch tối đa một lần mỗi ngày, đổi giờ UTC sang `Asia/Bangkok` và giữ bản dữ liệu thành công gần nhất để board vẫn hiển thị khi nhà cung cấp tạm gián đoạn.
 
 ### Ý nghĩa cấu hình
 
@@ -82,13 +110,25 @@ VOICE_AUTH_TOKEN=
 | `OPENROUTER_API_KEY` | rỗng | Bắt buộc để gọi LLM OpenRouter |
 | `OPENROUTER_MODEL` | `openrouter/free` | Router/model chat và tool calling |
 | `OPENROUTER_AUDIO_MODEL` | Nemotron free | Chỉ dùng nếu đổi STT khỏi `google-web` |
-| `STT_PROVIDER` | `google-web` | STT đang hoạt động trên board hiện tại |
+| `STT_PROVIDER` | `google-web` | `google-web`, `openai` hoặc `openrouter` |
+| `OPENAI_API_KEY` | rỗng | Bắt buộc khi `STT_PROVIDER=openai` |
+| `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | Model nhận dạng âm thanh OpenAI |
 | `STT_LANGUAGE` | `vi-VN` | Ngôn ngữ câu lệnh; wake còn chạy thêm `en-US` |
+| `WAKE_STT_PROVIDER` | `google-web` | Wake STT riêng; `configured` dùng cùng chuỗi provider của STT câu lệnh |
+| `WAKE_STT_TIMEOUT_SEC` | `3` | Timeout mỗi nhánh Google wake STT, không phải cam kết độ trễ tổng |
 | `TTS_PROVIDER` | `google` | `google` hoặc nhánh Edge TTS |
 | `TTS_VOICE` | `vi-VN-HoaiMyNeural` | Voice dùng bởi Edge TTS |
 | `VOICE_SESSION_TIMEOUT_SEC` | `30` | Thời gian chờ lệnh sau khi wake |
 | `VOICE_AUTH_TOKEN` | rỗng | Nếu có, firmware phải gửi Bearer token giống hệt |
 | `CONVERSATION_DB_PATH` | `data/conversations.db` | File lưu hội thoại và trace tool |
+| `FOOTBALL_DATA_API_KEY` | rỗng | API key lịch thi đấu; bắt buộc để tải dữ liệu mới |
+| `FOOTBALL_TEAM_ID` | `66` | Team ID Manchester United trên football-data.org |
+| `FOOTBALL_TIMEZONE` | `Asia/Bangkok` | Múi giờ ngày/giờ hiển thị trên ESP32 |
+| `FOOTBALL_CACHE_TTL_SECONDS` | `86400` | Chu kỳ làm mới hằng ngày; lỗi mạng dùng last-known-good cache |
+| `CODEX_USAGE_LOCAL_ENABLED` | `True` | Cho gateway trên PC đọc Codex CLI đã đăng nhập |
+| `CODEX_USAGE_REFRESH_SECONDS` | `60` | TTL trước khi collector đọc usage live lần tiếp theo |
+| `CODEX_USAGE_STALE_SECONDS` | `900` | Đánh dấu cache cũ trên thiết bị |
+| `CODEX_USAGE_SYNC_TOKEN` | rỗng | Bearer token riêng để PC đẩy snapshot lên Oracle; rỗng sẽ khóa route sync |
 
 ## Khởi động
 
@@ -119,6 +159,10 @@ Chế độ reload khi phát triển:
 | `GET` | `/api/v1/conversations?device_id=&limit=50` | Lịch sử hội thoại và tool trace |
 | `GET` | `/api/wallpapers/slideshow` | Proxy danh sách slideshow từ Go :8081 |
 | `GET` | `/uploads/wallpapers/{filename}` | Proxy file wallpaper từ Go :8081 |
+| `GET` | `/api/football/manchester-united` | Trận kế tiếp của Manchester United; `force=true` bỏ TTL cache |
+| `GET` | `/api/football/manchester-united/background.jpg` | Ảnh nền JPEG 320×240 gồm nền đỏ và logo MU |
+| `GET` | `/api/codex/usage` | Hạn mức 5 giờ, tuần và full-reset; `force=true` yêu cầu làm mới |
+| `POST` | `/api/codex/usage/sync` | Nhận snapshot từ PC, yêu cầu Bearer token |
 
 Kiểm tra:
 
@@ -193,7 +237,52 @@ PCM -> VAD end -> listen.processing -> STT vi-VN
 
 Lệnh volume/brightness/app có parser trực tiếp để vẫn ổn định khi model free được OpenRouter chọn có tool calling yếu. Yêu cầu khác đi qua OpenRouter.
 
+Lệnh mở Codex Credit: “mở ứng dụng Codex Credit”, “mở Codex”, “Codex usage”
+hoặc “code credit checking”. Parser hỗ trợ câu không dấu và bản nhận dạng nhầm
+đã ghi nhận “Tracking topic Credit”; không tự ánh xạ từ chung như “Connect” hay
+“credit” thành tên app. Tên app chưa rõ sẽ được hỏi lại.
+
+Hai câu lệnh tắt (có dấu hoặc không dấu):
+
+- “kiểm tra lịch thi đấu bóng đá” → mở app Manchester United (`man-utd`).
+- “kiểm tra Codex Credit” → mở app Codex Credit (`codex-credit`).
+
+Có thể thêm “Hey Dom” ở đầu câu hoặc “giúp mình nhé” ở cuối câu. Câu hỏi
+về lịch của đội khác không tự ánh xạ sang Manchester United.
+
+Gateway gửi `app.launch({"app":"codex-credit"})` và chờ MCP result từ ESP32
+trước khi xác nhận bằng giọng nói. Nếu timeout hoặc firmware báo lỗi, gateway
+không báo mở thành công. Lời xác nhận mở app do LLM tự tạo mà không gọi công cụ
+sẽ bị chặn. Tool trace được lưu trong lịch sử để đối chiếu với log `Launched`
+của firmware (MCP result xác nhận yêu cầu được nhận, không phải ảnh chụp màn hình).
+
+Mọi câu LLM đi qua bộ chuẩn hóa văn bản thuần trước khi lưu SQLite, hiển thị LCD
+và phát TTS. Bộ lọc bỏ heading, `**bold**`, `***`, đường kẻ, bullet, link, code
+fence và HTML; lịch sử cũ được làm sạch idempotent khi gateway khởi động.
+
+OpenAI LLM và OpenAI STT có circuit riêng. Lỗi STT chỉ chuyển sang Google STT,
+không làm ChatGPT bị bỏ qua. LLM chỉ chuyển OpenRouter khi OpenAI trả mã quota
+`insufficient_quota`/hết credit; rate limit tạm thời, timeout, lỗi mạng, xác thực
+hoặc lỗi server được báo lỗi và không âm thầm đổi model. Provider/model thực tế
+sau fallback được cập nhật vào conversation turn thay cho provider ưu tiên.
+
 ## MCP tools
+
+Assistant tự kết nối sau khi ESP32 có Wi-Fi, không cần mở màn hình Assistant
+lần đầu. Khi nghe “Hey Dom”, “Hey” hoặc “Dom”, gateway gửi `listen.start`
+với `source=wake_word`; nếu câu gọi kèm lệnh thì dùng `listen.processing`
+với cùng source. Firmware đưa Assistant lên trước qua EventBus và hàng đợi UI.
+Các trạng thái TTS thông thường không giành lại màn hình từ app vừa được mở.
+
+Wake STT mặc định chạy Google tiếng Việt/Anh song song, ưu tiên bản tiếng Việt.
+Nếu nhánh tiếng Anh nhận trước, chỉ chờ tiếng Việt thêm tối đa 150 ms; mỗi nhánh
+có timeout riêng. Lệnh hội thoại vẫn dùng `STT_PROVIDER` như cấu hình cũ.
+Log `stt_ms` đo phần kiểm tra wake, không bao gồm thời gian chờ kết thúc câu VAD.
+
+Không còn xem “Hello”, “huy động”, “he does” là wake word vì dễ kích hoạt nhầm
+khi nghe nền. “Hey” và “Dom” vẫn có nguy cơ kích hoạt nhầm trong hội thoại.
+Đây là cải tiến luồng nhận dạng, **chưa phải model đã huấn luyện theo giọng riêng**.
+Xem [thu mẫu và đánh giá wake word](../docs/WAKE_WORD.md).
 
 | Tool | Arguments | Kết quả |
 |---|---|---|
@@ -201,7 +290,22 @@ Lệnh volume/brightness/app có parser trực tiếp để vẫn ổn định k
 | `speaker.set_volume` | `{"volume": 0..100}` | Đặt volume tuyệt đối |
 | `speaker.adjust_volume` | `{"delta": -100..100}` | Tăng/giảm volume |
 | `display.adjust_brightness` | `{"delta": -100..100}` | Tăng/giảm backlight |
-| `app.launch` | `{"app":"wallpaper"}` hoặc `clock` | Yêu cầu AppManager mở app |
+| `app.launch` | `{"app":"wallpaper"}`, `clock`, `man-utd` hoặc `codex-credit` | Yêu cầu AppManager mở app |
+
+## Codex Usage app
+
+Khi gateway chạy trên máy đã đăng nhập Codex, giữ `CODEX_USAGE_LOCAL_ENABLED=True`.
+Gateway gọi local Codex app-server, chuẩn hóa dữ liệu và chỉ gửi phần trăm/thời điểm reset cho ESP32; credential không được gửi xuống board.
+
+Khi gateway chạy trên Oracle Free Tier, đặt `CODEX_USAGE_LOCAL_ENABLED=False`, tạo một `CODEX_USAGE_SYNC_TOKEN` mạnh ở cả PC và Oracle, rồi chạy định kỳ trên PC:
+
+```powershell
+$env:CODEX_USAGE_SYNC_URL="https://voice.<YOUR_DOMAIN>"
+$env:CODEX_USAGE_SYNC_TOKEN="<PRIVATE_SYNC_TOKEN>"
+.\.venv\Scripts\python.exe scripts\sync_codex_usage.py
+```
+
+Có thể tạo Windows Task Scheduler chạy lệnh trên mỗi 5 phút. Không sao chép thư mục đăng nhập Codex hoặc token tài khoản lên Oracle.
 
 Gateway chỉ xác nhận thành công sau khi firmware trả MCP result.
 

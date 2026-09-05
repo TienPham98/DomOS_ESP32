@@ -1,0 +1,295 @@
+INFO:     Started server process [22148]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     192.168.0.104:60339 - "WebSocket /api/v1/voice/stream" [accepted]
+INFO:     connection open
+2026-09-03 21:25:51,138 [INFO] domos.openrouter: Cloud voice connected device=B8:1F:3F:C3:97:54 provider=openai session=6ba62cd4-e415-476b-b79e-a1f2b33c3c30
+2026-09-03 21:26:48,287 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=28 speech_frames=5 peak_rms=370 avg_speech_rms=261
+2026-09-03 21:26:49,371 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 21:26:49,372 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 21:26:50,328 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 21:26:50,330 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 21:26:50,809 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:27:15,885 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=40 speech_frames=20 peak_rms=665 avg_speech_rms=367
+2026-09-03 21:27:16,429 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:27:17,805 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=14 peak_rms=602 avg_speech_rms=414
+2026-09-03 21:27:18,449 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:30:04,545 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=28 speech_frames=13 peak_rms=358 avg_speech_rms=281
+2026-09-03 21:30:05,050 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:33:24,299 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=50 speech_frames=5 peak_rms=503 avg_speech_rms=259
+2026-09-03 21:33:24,937 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 21:33:24,938 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 21:33:25,911 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 21:33:25,913 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 21:33:26,521 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:34:18,577 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=8 peak_rms=532 avg_speech_rms=363
+2026-09-03 21:34:18,999 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:37:55,710 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=5 peak_rms=298 avg_speech_rms=225
+2026-09-03 21:37:56,154 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:38:32,193 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=5 peak_rms=510 avg_speech_rms=221
+2026-09-03 21:38:33,677 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 21:38:33,678 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 21:38:34,790 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 21:38:34,791 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 21:38:35,190 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:39:17,429 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=2018 avg_speech_rms=997
+2026-09-03 21:39:18,040 [INFO] domos.openrouter: Wake phrase accepted device=B8:1F:3F:C3:97:54 language=vi-VN transcript='Hello' candidates=[('vi-VN', 'Hello')]
+2026-09-03 21:39:20,007 [INFO] domos.openrouter: Command speech ended device=B8:1F:3F:C3:97:54 frames=22 speech_frames=3 peak_rms=600
+2026-09-03 21:39:20,415 [INFO] domos.openrouter: VAD event contained no recognizable speech device=B8:1F:3F:C3:97:54
+2026-09-03 21:39:22,346 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=29 speech_frames=10 peak_rms=3293 avg_speech_rms=1263
+2026-09-03 21:39:22,912 [INFO] domos.openrouter: Wake phrase accepted device=B8:1F:3F:C3:97:54 language=vi-VN transcript='Hello' candidates=[('vi-VN', 'Hello')]
+2026-09-03 21:39:23,787 [INFO] domos.openrouter: Command speech ended device=B8:1F:3F:C3:97:54 frames=15 speech_frames=6 peak_rms=3221
+2026-09-03 21:39:24,219 [INFO] domos.openrouter: STT device=B8:1F:3F:C3:97:54 text=thay \u0111\u1ed3
+2026-09-03 21:39:25,161 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-03 21:39:53,248 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=2827 avg_speech_rms=1554
+2026-09-03 21:39:53,752 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', 'hành \u0111\u1ed9ng')]
+2026-09-03 21:39:55,768 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=21 speech_frames=6 peak_rms=4227 avg_speech_rms=1939
+2026-09-03 21:39:56,654 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', 'hành \u0111\u1ed9ng')]
+2026-09-03 21:39:58,167 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=21 speech_frames=6 peak_rms=2619 avg_speech_rms=1529
+2026-09-03 21:39:58,870 [INFO] domos.openrouter: Wake phrase accepted device=B8:1F:3F:C3:97:54 language=vi-VN transcript='Hello' candidates=[('vi-VN', 'Hello')]
+2026-09-03 21:40:06,930 [INFO] domos.openrouter: Command speech ended device=B8:1F:3F:C3:97:54 frames=96 speech_frames=3 peak_rms=699
+2026-09-03 21:40:07,735 [INFO] domos.openrouter: VAD event contained no recognizable speech device=B8:1F:3F:C3:97:54
+2026-09-03 21:40:08,966 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=531 avg_speech_rms=335
+2026-09-03 21:40:09,635 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', 'Bill Gates')]
+2026-09-03 21:40:50,244 [INFO] domos.openrouter: Command speech ended device=B8:1F:3F:C3:97:54 frames=24 speech_frames=8 peak_rms=1612
+2026-09-03 21:40:50,876 [INFO] domos.openrouter: STT device=B8:1F:3F:C3:97:54 text=b\u1eadt app connect
+2026-09-03 21:40:54,150 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-03 21:42:09,745 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=19 speech_frames=5 peak_rms=879 avg_speech_rms=422
+2026-09-03 21:42:10,115 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:42:11,308 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=1576 avg_speech_rms=572
+2026-09-03 21:42:11,730 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:43:25,808 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=445 avg_speech_rms=305
+2026-09-03 21:43:26,239 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:43:33,626 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=475 avg_speech_rms=256
+2026-09-03 21:43:34,030 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:43:55,083 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=36 speech_frames=5 peak_rms=505 avg_speech_rms=271
+2026-09-03 21:43:56,192 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 21:43:56,193 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 21:43:57,191 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 21:43:57,193 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 21:43:57,741 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:44:14,208 [INFO] domos.openrouter: OpenRouter voice disconnected device=B8:1F:3F:C3:97:54
+INFO:     192.168.0.104:60340 - "WebSocket /api/v1/voice/stream" [accepted]
+INFO:     connection open
+2026-09-03 21:44:17,290 [INFO] domos.openrouter: Cloud voice connected device=B8:1F:3F:C3:97:54 provider=openai session=2a967841-5d82-4eda-bd43-c9df0750b9ad
+2026-09-03 21:44:23,346 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=24 speech_frames=9 peak_rms=1086 avg_speech_rms=500
+2026-09-03 21:44:23,909 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 21:44:23,910 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 21:44:24,459 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 21:44:24,460 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 21:44:24,884 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:44:34,039 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=31 speech_frames=5 peak_rms=456 avg_speech_rms=290
+2026-09-03 21:44:35,024 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:44:51,199 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=25 speech_frames=10 peak_rms=555 avg_speech_rms=378
+2026-09-03 21:44:51,660 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:55:06,484 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=2653 avg_speech_rms=1432
+2026-09-03 21:55:08,556 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 21:55:08,557 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 21:55:09,510 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 21:55:09,511 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 21:55:10,034 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', 'hình tròn')]
+2026-09-03 21:55:52,161 [INFO] domos.openrouter: Listening activation expired device=B8:1F:3F:C3:97:54
+2026-09-03 21:57:16,503 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=42 speech_frames=5 peak_rms=413 avg_speech_rms=271
+2026-09-03 21:57:17,109 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:57:45,605 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=50 speech_frames=44 peak_rms=653 avg_speech_rms=526
+2026-09-03 21:57:46,328 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:58:18,248 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=46 speech_frames=28 peak_rms=589 avg_speech_rms=423
+2026-09-03 21:58:19,101 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', 'bà n\u1ed9i bà n\u1ed9i bà n\u1ed9i')]
+2026-09-03 21:58:22,856 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=50 speech_frames=37 peak_rms=609 avg_speech_rms=406
+2026-09-03 21:58:23,902 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', 'bà n\u1ed9i bà n\u1ed9i SEA Games Plus')]
+INFO:     192.168.0.104:60341 - "WebSocket /api/v1/voice/stream" [accepted]
+INFO:     connection open
+2026-09-03 21:58:27,475 [INFO] domos.openrouter: Cloud voice connected device=B8:1F:3F:C3:97:54 provider=openai session=74ec656b-74e4-4674-8c12-b639e15d55de
+2026-09-03 21:58:30,540 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=50 speech_frames=28 peak_rms=806 avg_speech_rms=494
+2026-09-03 21:58:32,145 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 21:58:32,145 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 21:58:33,086 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 21:58:33,086 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 21:58:33,999 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:58:34,983 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=17 speech_frames=8 peak_rms=728 avg_speech_rms=496
+2026-09-03 21:58:35,500 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:58:37,241 [INFO] domos.openrouter: OpenRouter voice disconnected device=B8:1F:3F:C3:97:54
+2026-09-03 21:58:37,535 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=24 speech_frames=8 peak_rms=734 avg_speech_rms=402
+2026-09-03 21:58:37,974 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:58:44,834 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=38 speech_frames=5 peak_rms=369 avg_speech_rms=243
+2026-09-03 21:58:45,356 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:58:48,060 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=26 speech_frames=5 peak_rms=447 avg_speech_rms=238
+2026-09-03 21:58:48,495 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 21:58:53,157 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=567 avg_speech_rms=356
+2026-09-03 21:58:53,562 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:01:24,423 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=407 avg_speech_rms=266
+2026-09-03 22:01:24,824 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:02:02,634 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=29 speech_frames=9 peak_rms=458 avg_speech_rms=278
+2026-09-03 22:02:03,118 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:03:39,897 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=385 avg_speech_rms=275
+2026-09-03 22:03:40,576 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 22:03:40,577 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 22:03:41,602 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 22:03:41,603 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 22:03:41,994 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:03:52,072 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=395 avg_speech_rms=271
+2026-09-03 22:03:52,520 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:06:21,289 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=877 avg_speech_rms=383
+2026-09-03 22:06:21,683 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:07:04,714 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=493 avg_speech_rms=286
+2026-09-03 22:07:05,132 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:07:12,647 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=420 avg_speech_rms=259
+2026-09-03 22:07:13,037 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:07:58,511 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=31 speech_frames=5 peak_rms=406 avg_speech_rms=272
+2026-09-03 22:07:59,010 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:08:22,968 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=419 avg_speech_rms=277
+2026-09-03 22:08:23,380 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:09:06,530 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=32 speech_frames=10 peak_rms=412 avg_speech_rms=270
+2026-09-03 22:09:08,446 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 22:09:08,447 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 22:09:10,132 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 22:09:10,133 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 22:09:10,650 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:09:13,307 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=448 avg_speech_rms=270
+2026-09-03 22:09:13,721 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:10:17,615 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=932 avg_speech_rms=558
+2026-09-03 22:10:18,014 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:10:43,848 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=487 avg_speech_rms=332
+2026-09-03 22:10:44,257 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:11:09,072 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=26 speech_frames=8 peak_rms=551 avg_speech_rms=321
+2026-09-03 22:11:09,661 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:11:20,850 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=50 speech_frames=36 peak_rms=713 avg_speech_rms=452
+2026-09-03 22:11:21,468 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:11:37,602 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=6 peak_rms=488 avg_speech_rms=284
+2026-09-03 22:11:38,037 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:11:46,127 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=50 speech_frames=5 peak_rms=449 avg_speech_rms=234
+2026-09-03 22:11:46,778 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:11:56,192 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=7 peak_rms=412 avg_speech_rms=259
+2026-09-03 22:11:56,616 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:12:11,082 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=21 speech_frames=6 peak_rms=329 avg_speech_rms=230
+2026-09-03 22:12:11,504 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:12:13,122 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=28 speech_frames=11 peak_rms=463 avg_speech_rms=315
+2026-09-03 22:12:13,576 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:12:57,399 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=24 speech_frames=5 peak_rms=502 avg_speech_rms=283
+2026-09-03 22:12:57,819 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:13:01,123 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=36 speech_frames=14 peak_rms=510 avg_speech_rms=322
+2026-09-03 22:13:01,645 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:13:29,805 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=27 speech_frames=10 peak_rms=531 avg_speech_rms=275
+2026-09-03 22:13:30,309 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:13:35,005 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=422 avg_speech_rms=274
+2026-09-03 22:13:35,433 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:14:01,420 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=24 speech_frames=9 peak_rms=418 avg_speech_rms=284
+2026-09-03 22:14:01,842 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:14:19,541 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=21 speech_frames=6 peak_rms=461 avg_speech_rms=240
+2026-09-03 22:14:20,467 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 22:14:20,468 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 22:14:21,574 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 22:14:21,574 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 22:14:21,960 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:16:35,926 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=44 speech_frames=5 peak_rms=670 avg_speech_rms=240
+2026-09-03 22:16:36,594 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:16:53,239 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=32 speech_frames=5 peak_rms=574 avg_speech_rms=349
+2026-09-03 22:16:53,998 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:17:02,319 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=35 speech_frames=15 peak_rms=1409 avg_speech_rms=475
+2026-09-03 22:17:02,876 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:17:10,538 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=32 speech_frames=13 peak_rms=936 avg_speech_rms=437
+2026-09-03 22:17:11,017 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:17:13,239 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=37 speech_frames=21 peak_rms=1039 avg_speech_rms=542
+2026-09-03 22:17:13,704 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:18:05,133 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=31 speech_frames=5 peak_rms=569 avg_speech_rms=365
+2026-09-03 22:18:05,616 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:18:55,638 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=41 speech_frames=5 peak_rms=456 avg_speech_rms=286
+2026-09-03 22:18:56,185 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:19:01,772 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=678 avg_speech_rms=260
+2026-09-03 22:19:02,155 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:19:36,863 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=31 speech_frames=5 peak_rms=422 avg_speech_rms=276
+2026-09-03 22:19:37,566 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 22:19:37,567 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 22:19:38,586 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 22:19:38,587 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 22:19:39,067 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:20:28,837 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=40 speech_frames=5 peak_rms=467 avg_speech_rms=212
+2026-09-03 22:20:29,403 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:21:29,851 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=392 avg_speech_rms=263
+2026-09-03 22:21:30,281 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:21:35,132 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=25 speech_frames=10 peak_rms=361 avg_speech_rms=301
+2026-09-03 22:21:35,559 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:21:56,136 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=41 speech_frames=16 peak_rms=384 avg_speech_rms=272
+2026-09-03 22:21:56,725 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:22:09,329 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=29 speech_frames=5 peak_rms=353 avg_speech_rms=241
+2026-09-03 22:22:09,802 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:22:27,808 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=24 speech_frames=5 peak_rms=448 avg_speech_rms=280
+2026-09-03 22:22:28,276 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:22:47,727 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=28 speech_frames=5 peak_rms=416 avg_speech_rms=278
+2026-09-03 22:22:48,163 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:23:27,745 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=1059 avg_speech_rms=383
+2026-09-03 22:23:28,148 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:23:37,715 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=15 speech_frames=5 peak_rms=444 avg_speech_rms=294
+2026-09-03 22:23:38,105 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:24:03,987 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=32 speech_frames=5 peak_rms=421 avg_speech_rms=266
+2026-09-03 22:24:04,517 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:24:07,284 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=28 speech_frames=8 peak_rms=464 avg_speech_rms=316
+2026-09-03 22:24:07,751 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:24:54,399 [INFO] httpx: HTTP Request: GET https://api.football-data.org/v4/teams/66/matches?dateFrom=2026-09-03&dateTo=2027-01-01&limit=30 "HTTP/1.1 200 "
+2026-09-03 22:25:21,683 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=22 speech_frames=7 peak_rms=447 avg_speech_rms=277
+2026-09-03 22:25:23,255 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 22:25:23,256 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 22:25:24,363 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 22:25:24,364 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 22:25:24,776 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:26:48,502 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=26 speech_frames=5 peak_rms=317 avg_speech_rms=242
+2026-09-03 22:26:48,943 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:27:18,862 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=8 peak_rms=469 avg_speech_rms=361
+2026-09-03 22:27:19,266 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:28:00,860 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=41 speech_frames=5 peak_rms=395 avg_speech_rms=254
+2026-09-03 22:28:01,390 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:28:11,060 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=24 speech_frames=5 peak_rms=387 avg_speech_rms=245
+2026-09-03 22:28:11,486 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:28:38,660 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=27 speech_frames=8 peak_rms=434 avg_speech_rms=315
+2026-09-03 22:28:39,090 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:28:51,677 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=50 speech_frames=44 peak_rms=571 avg_speech_rms=398
+2026-09-03 22:28:52,919 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:30:14,120 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=374 avg_speech_rms=273
+2026-09-03 22:30:14,480 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:35:56,892 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=38 speech_frames=5 peak_rms=315 avg_speech_rms=224
+2026-09-03 22:35:58,645 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 22:35:58,646 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 22:35:59,698 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 22:35:59,700 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 22:36:00,174 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:36:30,787 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=336 avg_speech_rms=231
+2026-09-03 22:36:31,189 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:36:33,768 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=5 peak_rms=327 avg_speech_rms=237
+2026-09-03 22:36:34,206 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:37:00,146 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=5 peak_rms=424 avg_speech_rms=274
+2026-09-03 22:37:00,570 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:37:06,017 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=32 speech_frames=5 peak_rms=955 avg_speech_rms=352
+2026-09-03 22:37:06,514 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:39:03,246 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=27 speech_frames=5 peak_rms=630 avg_speech_rms=216
+2026-09-03 22:39:03,700 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:39:06,945 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=25 speech_frames=7 peak_rms=378 avg_speech_rms=261
+2026-09-03 22:39:07,379 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:39:11,177 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=46 speech_frames=5 peak_rms=347 avg_speech_rms=253
+2026-09-03 22:39:11,782 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:39:23,223 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=25 speech_frames=6 peak_rms=309 avg_speech_rms=233
+2026-09-03 22:39:23,676 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:42:51,059 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=21 speech_frames=6 peak_rms=332 avg_speech_rms=263
+2026-09-03 22:42:52,710 [INFO] httpx: HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 429 Too Many Requests"
+2026-09-03 22:42:52,711 [WARNING] domos.openrouter: OpenAI STT failed; falling back to OpenRouter Audio: OpenAI STT HTTP 429: insufficient_quota: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.
+2026-09-03 22:42:53,802 [INFO] httpx: HTTP Request: POST https://openrouter.ai/api/v1/chat/completions "HTTP/1.1 402 Payment Required"
+2026-09-03 22:42:53,803 [WARNING] domos.openrouter: OpenRouter Audio failed; falling back to Google STT: OpenRouter HTTP 402: 402: This request requires at least $0.50 in balance for audio
+2026-09-03 22:42:54,208 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:44:29,698 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=440 avg_speech_rms=256
+2026-09-03 22:44:30,138 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:44:59,586 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=30 speech_frames=5 peak_rms=532 avg_speech_rms=309
+2026-09-03 22:45:00,068 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:45:09,896 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=324 avg_speech_rms=245
+2026-09-03 22:45:10,284 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:45:38,700 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=23 speech_frames=5 peak_rms=372 avg_speech_rms=262
+2026-09-03 22:45:39,115 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:45:42,895 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=528 avg_speech_rms=274
+2026-09-03 22:45:43,290 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:45:55,015 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=20 speech_frames=5 peak_rms=383 avg_speech_rms=241
+2026-09-03 22:45:55,448 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:47:05,396 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=42 speech_frames=5 peak_rms=1082 avg_speech_rms=308
+2026-09-03 22:47:05,944 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:47:17,754 [INFO] domos.openrouter: Wake audio device=B8:1F:3F:C3:97:54 frames=34 speech_frames=5 peak_rms=487 avg_speech_rms=277
+2026-09-03 22:47:18,259 [INFO] domos.openrouter: Wake phrase rejected device=B8:1F:3F:C3:97:54 transcripts=[('vi-VN', '')]
+2026-09-03 22:48:57,240 [INFO] domos.openrouter: OpenRouter voice disconnected device=B8:1F:3F:C3:97:54
+2026-09-03 22:55:40,069 [INFO] httpx: HTTP Request: GET https://api.football-data.org/v4/teams/66/matches?dateFrom=2026-09-03&dateTo=2027-01-01&limit=30 "HTTP/1.1 200 "
