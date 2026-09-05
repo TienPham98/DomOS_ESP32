@@ -125,7 +125,8 @@ async def proxy_wallpapers_slideshow() -> JSONResponse:
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                "http://127.0.0.1:8081/api/wallpapers/slideshow", timeout=5.0
+                f"{settings.CORE_BACKEND_URL.rstrip('/')}/api/wallpapers/slideshow",
+                timeout=5.0,
             )
         data = response.json()
         wallpapers = data.get("data", {}).get("wallpapers", [])
@@ -146,7 +147,8 @@ async def proxy_wallpaper_file(filename: str) -> Response:
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"http://127.0.0.1:8081/uploads/wallpapers/{safe_name}", timeout=10.0
+                f"{settings.CORE_BACKEND_URL.rstrip('/')}/uploads/wallpapers/{safe_name}",
+                timeout=10.0,
             )
         return Response(
             content=response.content,

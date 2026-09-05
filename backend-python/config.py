@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     TTS_VOICE: str
     TTS_TIMEOUT_SEC: float
     CONVERSATION_DB_PATH: str = "data/conversations.db"
+    CORE_BACKEND_URL: str
 
     # Codex plan usage. A local Codex CLI can refresh this cache directly;
     # production gateways receive normalized snapshots from the sync script.

@@ -62,6 +62,7 @@ class GatewayApiTests(unittest.TestCase):
             "TTS_PROVIDER",
             "TTS_VOICE",
             "TTS_TIMEOUT_SEC",
+            "CORE_BACKEND_URL",
             "FOOTBALL_DATA_BASE_URL",
             "MANCHESTER_UNITED_BADGE_URL",
             "MQTT_BROKER_HOST",
