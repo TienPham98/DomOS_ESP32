@@ -50,7 +50,7 @@ func New(cfg Config, repo *devices.Repository, hub Broadcaster) (*Client, error)
 		SetPassword(cfg.Password).
 		SetConnectTimeout(2 * time.Second).
 		SetAutoReconnect(true).
-		SetConnectRetry(false).
+		SetConnectRetry(true).
 		SetConnectRetryInterval(5 * time.Second).
 		SetOnConnectHandler(func(client paho.Client) {
 			logger.Info.Println("mqtt: connected to broker")
