@@ -204,6 +204,20 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertIn('strcmp(app, "codex-credit") != 0', assistant)
         self.assertIn('app = "codex-credit"', upload_server)
 
+    def test_codex_screen_only_shows_general_usage_windows(self):
+        manager = read("main/app/launcher/app_manager.cpp")
+        app = manager[manager.index("class CodexCreditApp"):manager.index("class DashboardApp")]
+        self.assertIn('"GENERAL USAGE LIMITS"', app)
+        self.assertIn('CreateWindowCard(32, "5 HOUR"', app)
+        self.assertIn('CreateWindowCard(111, "WEEKLY"', app)
+        self.assertIn("lv_obj_set_size(card, 308, 74)", app)
+        self.assertIn('"remaining_percent"', app)
+        self.assertIn('"resets_label"', app)
+        self.assertNotIn("full_reset", app)
+        self.assertNotIn("FULL RESET", app)
+        self.assertNotIn("reset_title_", app)
+        self.assertNotIn("reset_expiry_", app)
+
 
 if __name__ == "__main__":
     unittest.main()

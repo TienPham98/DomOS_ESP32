@@ -1,4 +1,10 @@
+FROM node:22-bookworm-slim AS codex
+ARG CODEX_VERSION=0.146.0
+RUN npm install --global "@openai/codex@${CODEX_VERSION}" \
+    && install -m 755 /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-*/vendor/*/codex/codex /codex
+
 FROM python:3.12-slim-bookworm
+COPY --from=codex /codex /usr/local/bin/codex
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

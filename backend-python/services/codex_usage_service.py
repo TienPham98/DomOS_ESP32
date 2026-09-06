@@ -13,6 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from config import settings
+from services.codex_auth_store import CodexAuthError, codex_environment
 
 
 logger = logging.getLogger("domos.codex_usage")
@@ -42,7 +43,7 @@ class CodexUsageService:
                     snapshot = await self.collect_local()
                     self._write_cache(snapshot)
                     return snapshot
-                except (CodexUsageError, OSError, asyncio.TimeoutError) as exc:
+                except (CodexUsageError, CodexAuthError, OSError, asyncio.TimeoutError) as exc:
                     logger.warning("Unable to refresh Codex usage: %s", exc)
 
             if cached is None:
@@ -52,15 +53,23 @@ class CodexUsageService:
             return result
 
     async def collect_local(self) -> dict[str, Any]:
-        """Query the authenticated local Codex app-server over JSONL stdio."""
+        """Query the gateway-hosted CLI; do not start a model or an agent turn."""
+        async with codex_environment() as env:
+            if settings.CODEX_USAGE_AUTH_DIR and not (Path(env["CODEX_HOME"]) / "auth.json").is_file():
+                raise CodexUsageError("Codex needs ChatGPT device login on the gateway")
+            return await self._collect_cli(env)
+
+    async def _collect_cli(self, env: dict[str, str]) -> dict[str, Any]:
         try:
             process = await asyncio.create_subprocess_exec(
                 settings.CODEX_CLI_PATH,
+                "-c",
+                'cli_auth_credentials_store="file"' if settings.CODEX_USAGE_AUTH_DIR else 'cli_auth_credentials_store="auto"',
                 "app-server",
-                "--stdio",
+                env=env,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError as exc:
             raise CodexUsageError("Codex CLI is unavailable") from exc
@@ -80,14 +89,17 @@ class CodexUsageService:
                     },
                 },
             )
-            await self._read_response(process, 1)
+            initialized = await self._read_response(process, 1)
+            if "error" in initialized:
+                raise CodexUsageError("Codex CLI initialization failed")
+            await self._send_request(process, {"method": "initialized", "params": {}})
             await self._send_request(
                 process,
                 {"id": 2, "method": "account/rateLimits/read"},
             )
             response = await self._read_response(process, 2)
             if "error" in response:
-                raise CodexUsageError(str(response["error"]))
+                raise CodexUsageError("Unable to read ChatGPT usage; check gateway Codex login")
             return self.normalize(response.get("result") or {})
         finally:
             if process.returncode is None:
@@ -128,11 +140,7 @@ class CodexUsageService:
             while True:
                 line = await process.stdout.readline()
                 if not line:
-                    stderr = b""
-                    if process.stderr is not None:
-                        stderr = await process.stderr.read()
-                    detail = stderr.decode(errors="replace").strip()
-                    raise CodexUsageError(detail or "Codex CLI closed unexpectedly")
+                    raise CodexUsageError("Codex CLI closed unexpectedly")
                 try:
                     message = json.loads(line)
                 except json.JSONDecodeError:

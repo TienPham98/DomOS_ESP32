@@ -1434,24 +1434,11 @@ public:
         lv_obj_set_style_bg_color(screen_, lv_color_hex(0x07111f), 0);
         lv_obj_clear_flag(screen_, LV_OBJ_FLAG_SCROLLABLE);
 
-        lv_obj_t *title = Label(screen_, "CODEX USAGE", LV_ALIGN_TOP_MID, 0, 7,
+        lv_obj_t *title = Label(screen_, "GENERAL USAGE LIMITS", LV_ALIGN_TOP_MID, 0, 7,
                                 &lv_font_montserrat_16);
         lv_obj_set_style_text_color(title, lv_color_hex(0x7dd3fc), 0);
-        CreateWindowCard(6, "5 HOUR", five_hour_percent_, five_hour_reset_, five_hour_bar_);
-        CreateWindowCard(163, "WEEKLY", weekly_percent_, weekly_reset_, weekly_bar_);
-
-        lv_obj_t *reset_card = lv_obj_create(screen_);
-        lv_obj_set_size(reset_card, 308, 57);
-        lv_obj_align(reset_card, LV_ALIGN_TOP_MID, 0, 119);
-        StyleCard(reset_card);
-        lv_obj_t *reset_heading = Label(reset_card, "FULL RESET", LV_ALIGN_TOP_LEFT, 0, -2,
-                                        &lv_font_montserrat_14);
-        lv_obj_set_style_text_color(reset_heading, lv_color_hex(0xfbbf24), 0);
-        reset_title_ = Label(reset_card, "Weekly + 5 hr", LV_ALIGN_BOTTOM_LEFT, 0, 1,
-                             &lv_font_montserrat_14);
-        reset_expiry_ = Label(reset_card, "--", LV_ALIGN_BOTTOM_RIGHT, 0, 1,
-                              &lv_font_montserrat_14);
-        lv_obj_set_style_text_color(reset_expiry_, lv_color_hex(0xcbd5e1), 0);
+        CreateWindowCard(32, "5 HOUR", five_hour_percent_, five_hour_reset_, five_hour_bar_);
+        CreateWindowCard(111, "WEEKLY", weekly_percent_, weekly_reset_, weekly_bar_);
 
         status_ = Label(screen_, "Waiting for usage data", LV_ALIGN_BOTTOM_MID, 0, -33,
                         &lv_font_montserrat_14);
@@ -1511,12 +1498,13 @@ private:
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     }
 
-    void CreateWindowCard(int x, const char *heading, lv_obj_t *&percent,
+    void CreateWindowCard(int y, const char *heading, lv_obj_t *&percent,
                           lv_obj_t *&reset, lv_obj_t *&bar)
     {
         lv_obj_t *card = lv_obj_create(screen_);
-        lv_obj_set_size(card, 151, 78);
-        lv_obj_align(card, LV_ALIGN_TOP_LEFT, x, 34);
+        // Full-width rows keep reset dates readable on the 320x240 display.
+        lv_obj_set_size(card, 308, 74);
+        lv_obj_align(card, LV_ALIGN_TOP_MID, 0, y);
         StyleCard(card);
         lv_obj_t *heading_label = Label(card, heading, LV_ALIGN_TOP_LEFT, 0, -2,
                                         &lv_font_montserrat_14);
@@ -1525,7 +1513,7 @@ private:
                         &lv_font_montserrat_14);
         lv_obj_set_style_text_color(percent, lv_color_white(), 0);
         bar = lv_bar_create(card);
-        lv_obj_set_size(bar, 135, 8);
+        lv_obj_set_size(bar, 292, 8);
         lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 28);
         lv_bar_set_range(bar, 0, 100);
         lv_bar_set_value(bar, 0, LV_ANIM_OFF);
@@ -1658,19 +1646,6 @@ private:
         RenderWindow(cJSON_GetObjectItemCaseSensitive(root, "weekly"),
                      weekly_percent_, weekly_reset_, weekly_bar_);
 
-        cJSON *full_reset = cJSON_GetObjectItemCaseSensitive(root, "full_reset");
-        if (cJSON_IsObject(full_reset)) {
-            std::string title = VietnameseToAscii(JsonText(full_reset, "title", "Weekly + 5 hr"));
-            constexpr const char *prefix = "Full reset (";
-            if (title.rfind(prefix, 0) == 0 && title.size() > std::strlen(prefix) && title.back() == ')') {
-                title = title.substr(std::strlen(prefix), title.size() - std::strlen(prefix) - 1);
-            }
-            cJSON *available = cJSON_GetObjectItemCaseSensitive(full_reset, "available");
-            if (!cJSON_IsTrue(available)) title = "Not available";
-            lv_label_set_text(reset_title_, title.c_str());
-            lv_label_set_text(reset_expiry_, cJSON_IsTrue(available)
-                ? JsonText(full_reset, "expires_label", "--") : "--");
-        }
         cJSON *stale = cJSON_GetObjectItemCaseSensitive(root, "stale");
         const char *updated = JsonText(root, "updated_label", "--");
         char status[48];
@@ -1686,8 +1661,6 @@ private:
     lv_obj_t *weekly_percent_ = nullptr;
     lv_obj_t *weekly_reset_ = nullptr;
     lv_obj_t *weekly_bar_ = nullptr;
-    lv_obj_t *reset_title_ = nullptr;
-    lv_obj_t *reset_expiry_ = nullptr;
     lv_obj_t *status_ = nullptr;
     lv_timer_t *refresh_timer_ = nullptr;
     std::atomic<bool> refresh_running_{false};

@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     CONVERSATION_DB_PATH: str = "data/conversations.db"
     CORE_BACKEND_URL: str
 
-    # Codex plan usage. A local Codex CLI can refresh this cache directly;
-    # production gateways receive normalized snapshots from the sync script.
+    # "LOCAL" means a CLI on the gateway host, including a cloud container.
+    # Leave AUTH_DIR empty to use the PC's existing signed-in CLI profile.
     CODEX_USAGE_LOCAL_ENABLED: bool = True
     CODEX_CLI_PATH: str = "codex"
     CODEX_USAGE_CACHE_PATH: str = "data/codex_usage.json"
@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     CODEX_USAGE_COLLECT_TIMEOUT_SECONDS: float = 10.0
     CODEX_USAGE_SYNC_TOKEN: str = ""
     CODEX_USAGE_SYNC_URL: str = ""
+    CODEX_USAGE_AUTH_DIR: str = ""
+    CODEX_USAGE_AUTH_ENCRYPTION_KEY: str = ""
+    DATABASE_URL: str = ""
 
     # Manchester United schedule. Provider credentials and URLs stay in .env.
     FOOTBALL_DATA_API_KEY: str = ""

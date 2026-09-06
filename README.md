@@ -10,7 +10,11 @@ DomOS is a smart-home UI and voice-assistant ecosystem for the ES3C28P board (ES
 
 The firmware includes a Manchester United fixture app. The Gateway refreshes the next match daily, converts it to the `Asia/Bangkok` timezone, retains a last-known-good cache during provider outages, and renders the result over the club background.
 
-The `Codex Usage` app displays the five-hour limit, weekly limit, and full-reset credit. A Gateway running on the PC reads the signed-in Codex session and exposes only a normalized usage snapshot to the ESP32. When the Gateway is deployed to Oracle, the PC can upload the snapshot through a Bearer-token-protected sync route.
+The `Codex Usage` app displays General usage limits: the remaining percentage and reset time for the five-hour and weekly windows. The Gateway reads these through Codex CLI's `account/rateLimits/read`, without starting an AI turn, and returns only a normalized snapshot to the ESP32.
+
+On Northflank, the gateway image includes a pinned Codex CLI. Set `CODEX_USAGE_LOCAL_ENABLED=true`, `CODEX_CLI_PATH=/usr/local/bin/codex`, and `CODEX_USAGE_AUTH_DIR=/data/codex-auth`. Link the existing PostgreSQL `DATABASE_URL` (a `postgresql://` URI), and generate a Fernet key with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` on a trusted administrator machine. Store that key as `CODEX_USAGE_AUTH_ENCRYPTION_KEY` in a secret group restricted to the gateway; never commit it or rotate it without migrating the encrypted session. In the gateway's private console, run `python scripts/cloud_codex_login.py login` and complete the displayed ChatGPT device-code login yourself. Use `status` to check login or `logout` to remove it. The helper stores the session encrypted in PostgreSQL and restores it after redeployment; a database lock serializes token refreshes. The authentication file grants account access: protect both the database and encryption key. No PC auth file is uploaded, no public login/command endpoint is added, and no extra service is needed.
+
+Usage refreshes on request when the cache is at least 60 seconds old; failed reads retain the last snapshot and mark it stale after 900 seconds. The PC snapshot sync script remains an optional alternative (`CODEX_USAGE_LOCAL_ENABLED=false` on the cloud). Full-reset credits are not displayed on the board.
 
 ### Active architecture
 
@@ -297,7 +301,11 @@ DomOS là hệ sinh thái trợ lý giọng nói và giao diện nhà thông min
 
 Firmware còn có app lịch Manchester United: dữ liệu trận kế tiếp được Gateway cập nhật hằng ngày, chuyển sang giờ `Asia/Bangkok`, cache để chịu lỗi mạng và hiển thị trên nền logo đội bóng.
 
-App `Codex Usage` hiển thị hạn mức 5 giờ, hạn mức tuần và full-reset. Gateway trên PC đọc phiên Codex đã đăng nhập, chỉ trả snapshot usage đã chuẩn hóa cho ESP32; khi gateway deploy Oracle, PC có thể đẩy snapshot qua route sync được bảo vệ bằng Bearer token.
+App `Codex Usage` chỉ hiển thị General usage limits: phần trăm còn lại và thời gian reset của hạn mức 5 giờ và hàng tuần. Gateway đọc qua `account/rateLimits/read` của Codex CLI, không khởi chạy lượt AI, và chỉ trả snapshot đã chuẩn hóa cho ESP32.
+
+Trên Northflank, image gateway đã tích hợp Codex CLI với phiên bản cố định. Đặt `CODEX_USAGE_LOCAL_ENABLED=true`, `CODEX_CLI_PATH=/usr/local/bin/codex`, `CODEX_USAGE_AUTH_DIR=/data/codex-auth`; liên kết `DATABASE_URL` của PostgreSQL hiện có (URI `postgresql://`). Tạo khóa Fernet trên máy quản trị tin cậy bằng `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`, lưu vào secret `CODEX_USAGE_AUTH_ENCRYPTION_KEY` chỉ cấp cho gateway. Không commit hoặc thay khóa khi chưa chuyển đổi phiên đã mã hóa. Trong console riêng của gateway, chạy `python scripts/cloud_codex_login.py login` rồi tự hoàn tất đăng nhập ChatGPT bằng mã thiết bị; dùng `status` để kiểm tra hoặc `logout` để đăng xuất. Phiên được mã hóa trong PostgreSQL, khôi phục sau redeploy và khóa khi làm mới token. File đăng nhập có quyền truy cập tài khoản: cần bảo vệ cả database và khóa mã hóa. Không tải auth từ PC, không mở API đăng nhập/chạy lệnh công khai, không cần thêm service.
+
+Usage được làm mới khi có yêu cầu và cache đã cũ ít nhất 60 giây; khi lỗi sẽ giữ snapshot gần nhất và đánh dấu stale sau 900 giây. Script đồng bộ từ PC vẫn là lựa chọn phụ (`CODEX_USAGE_LOCAL_ENABLED=false` trên cloud). Board không hiển thị full-reset credit.
 
 ### Kiến trúc đang hoạt động
 
