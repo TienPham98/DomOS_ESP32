@@ -203,6 +203,13 @@ lv_obj_t *Button(lv_obj_t *parent, const char *text, lv_align_t alignment, int x
     return button;
 }
 
+constexpr int kBackButtonScalePercent = 130;
+
+constexpr lv_coord_t BackButtonSize(lv_coord_t original)
+{
+    return static_cast<lv_coord_t>((original * kBackButtonScalePercent + 50) / 100);
+}
+
 void ToWallpaper(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("wallpaper"); }
 void ToAssistant(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("assistant"); }
 void ToSmartHome(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("smart-home"); }
@@ -226,7 +233,7 @@ protected:
     void AddBackButton()
     {
         lv_obj_t *top_btn = lv_btn_create(screen_);
-        lv_obj_set_size(top_btn, 48, 24);
+        lv_obj_set_size(top_btn, BackButtonSize(48), BackButtonSize(24));
         lv_obj_align(top_btn, LV_ALIGN_BOTTOM_LEFT, 6, -6);
         lv_obj_set_style_bg_color(top_btn, lv_color_hex(0x37474F), 0);
         lv_obj_set_style_bg_grad_color(top_btn, lv_color_hex(0x263238), 0);
@@ -239,7 +246,7 @@ protected:
         }, LV_EVENT_CLICKED, &manager_);
         lv_obj_t *lbl = lv_label_create(top_btn);
         lv_label_set_text(lbl, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
         lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 0);
     }
     AppManager &manager_;
@@ -934,7 +941,7 @@ public:
 
         // 3. Back Button (Top Left)
         back_btn_ = lv_btn_create(screen_);
-        lv_obj_set_size(back_btn_, 40, 28);
+        lv_obj_set_size(back_btn_, BackButtonSize(40), BackButtonSize(28));
         lv_obj_align(back_btn_, LV_ALIGN_TOP_LEFT, 6, 6);
         lv_obj_set_style_bg_color(back_btn_, lv_color_hex(0x0f172a), 0);
         lv_obj_set_style_bg_opa(back_btn_, LV_OPA_80, 0);
@@ -961,7 +968,7 @@ public:
 
         lv_obj_t *b_lbl = lv_label_create(back_btn_);
         lv_label_set_text(b_lbl, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_font(b_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(b_lbl, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(b_lbl, lv_color_hex(0x38bdf8), 0);
         lv_obj_align(b_lbl, LV_ALIGN_CENTER, 0, 0);
 
@@ -1783,7 +1790,7 @@ public:
 
         // Back Button on Top Left Header (so keyboard at bottom doesn't cover it)
         lv_obj_t *back_btn = lv_btn_create(screen_);
-        lv_obj_set_size(back_btn, 42, 24);
+        lv_obj_set_size(back_btn, BackButtonSize(42), BackButtonSize(24));
         lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 6, 4);
         lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x37474F), 0);
         lv_obj_set_style_bg_grad_color(back_btn, lv_color_hex(0x263238), 0);
@@ -1796,7 +1803,7 @@ public:
         }, LV_EVENT_CLICKED, &manager_);
         lv_obj_t *back_lbl = lv_label_create(back_btn);
         lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_16, 0);
         lv_obj_align(back_lbl, LV_ALIGN_CENTER, 0, 0);
 
         ta_ssid_ = lv_textarea_create(screen_);
