@@ -87,7 +87,7 @@ class GatewayApiTests(unittest.TestCase):
         self.assertIn("tts_provider", payload)
 
     def test_device_status_requires_control_token(self):
-        with patch.object(main.settings, "VOICE_AUTH_TOKEN", "control-secret"):
+        with patch.object(main.settings, "BOARD_CONTROL_AUTH_TOKEN", "control-secret"):
             with TestClient(main.app) as client:
                 response = client.get("/api/device/status")
         self.assertEqual(response.status_code, 401)
@@ -107,7 +107,7 @@ class GatewayApiTests(unittest.TestCase):
             "isError": False,
         })
         with (
-            patch.object(main.settings, "VOICE_AUTH_TOKEN", "control-secret"),
+            patch.object(main.settings, "BOARD_CONTROL_AUTH_TOKEN", "control-secret"),
             patch.object(main.voice_registry, "get", AsyncMock(return_value=session)),
         ):
             with TestClient(main.app) as client:
@@ -128,7 +128,7 @@ class GatewayApiTests(unittest.TestCase):
             "isError": False,
         })
         with (
-            patch.object(main.settings, "VOICE_AUTH_TOKEN", "control-secret"),
+            patch.object(main.settings, "BOARD_CONTROL_AUTH_TOKEN", "control-secret"),
             patch.object(main.voice_registry, "get", AsyncMock(return_value=session)),
         ):
             with TestClient(main.app) as client:

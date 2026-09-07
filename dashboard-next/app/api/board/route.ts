@@ -4,7 +4,7 @@ const gatewayUrl =
   "http://localhost:8000";
 
 function gatewayHeaders(): HeadersInit | null {
-  const token = process.env.DOMOS_AI_AUTH_TOKEN;
+  const token = process.env.BOARD_CONTROL_AUTH_TOKEN;
   return token
     ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
     : null;

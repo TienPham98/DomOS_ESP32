@@ -39,7 +39,7 @@ class DeviceSettingsRequest(BaseModel):
 
 
 def _authorize_device_control(authorization: str | None) -> None:
-    expected = settings.VOICE_AUTH_TOKEN
+    expected = settings.BOARD_CONTROL_AUTH_TOKEN
     if not expected:
         raise HTTPException(status_code=503, detail="Device control authentication is not configured")
     supplied = authorization or ""
