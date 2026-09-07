@@ -8,6 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, call, patch
 
+import httpx
 from starlette.exceptions import StarletteDeprecationWarning
 
 warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
@@ -147,6 +148,79 @@ class GatewayApiTests(unittest.TestCase):
                 call("display.set_brightness", {"brightness": 40}),
             ],
         )
+
+    def test_clock_settings_use_cloud_device_tool(self):
+        session = VoiceSession(FakeWebSocket(), "board-a", "session-a")
+        session.call_device_tool = AsyncMock(return_value={
+            "content": [{"type": "text", "text": "queued"}],
+            "isError": False,
+        })
+        with (
+            patch.object(main.settings, "BOARD_CONTROL_AUTH_TOKEN", "control-secret"),
+            patch.object(main.voice_registry, "get", AsyncMock(return_value=session)),
+        ):
+            with TestClient(main.app) as client:
+                response = client.post(
+                    "/api/device/clock",
+                    headers={"Authorization": "Bearer control-secret"},
+                    json={"style": "minimal", "color": "#06b6d4", "mode": "dark"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        session.call_device_tool.assert_awaited_once_with(
+            "clock.configure",
+            {"style": "minimal", "color": "#06b6d4", "mode": "dark"},
+        )
+
+    def test_wallpaper_selection_resolves_metadata_server_side(self):
+        session = VoiceSession(FakeWebSocket(), "board-a", "session-a")
+        session.call_device_tool = AsyncMock(return_value={
+            "content": [{"type": "text", "text": "queued"}],
+            "isError": False,
+        })
+        metadata = httpx.Response(200, json={
+            "data": {
+                "id": "wp-1",
+                "name": "desk.jpg",
+                "url": "http://go-core:8080/uploads/wallpapers/bg_wp-1.jpg",
+            }
+        })
+        with (
+            patch.object(main.settings, "BOARD_CONTROL_AUTH_TOKEN", "control-secret"),
+            patch.object(main.voice_registry, "get", AsyncMock(return_value=session)),
+            patch.object(main, "_core_request", AsyncMock(return_value=metadata)),
+        ):
+            with TestClient(main.app) as client:
+                response = client.post(
+                    "/api/device/wallpaper",
+                    headers={"Authorization": "Bearer control-secret"},
+                    json={"action": "set", "wallpaper_id": "wp-1"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        arguments = session.call_device_tool.await_args.args[1]
+        self.assertEqual(session.call_device_tool.await_args.args[0], "wallpaper.set")
+        self.assertEqual(arguments["name"], "desk.jpg")
+        self.assertTrue(arguments["url"].endswith("/uploads/wallpapers/bg_wp-1.jpg"))
+        self.assertNotIn("go-core", arguments["url"])
+
+    def test_wallpaper_list_rewrites_internal_urls_to_gateway(self):
+        core_response = httpx.Response(200, json={
+            "success": True,
+            "data": [{
+                "id": "wp-1",
+                "url": "http://go-core:8080/uploads/wallpapers/bg_wp-1.jpg",
+                "thumbnail_url": "http://go-core:8080/uploads/wallpapers/thumb_wp-1.jpg",
+            }],
+        })
+        with patch.object(main, "_core_request", AsyncMock(return_value=core_response)):
+            with TestClient(main.app) as client:
+                response = client.get("/api/wallpapers")
+
+        self.assertEqual(response.status_code, 200)
+        wallpaper = response.json()["data"][0]
+        self.assertIn("/uploads/wallpapers/bg_wp-1.jpg", wallpaper["url"])
+        self.assertNotIn("go-core", wallpaper["url"])
 
     def test_conversation_endpoint_filters_by_device(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -20,6 +20,12 @@ export interface BoardSettings {
   brightness?: number;
 }
 
+export interface ClockAppearance {
+  style: "digital" | "minimal" | "analog" | "flip" | "word" | "binary";
+  color: string;
+  mode: "dark" | "light";
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -35,10 +41,26 @@ export async function fetchBoardStatus(signal?: AbortSignal): Promise<BoardStatu
 }
 
 export async function updateBoardSettings(settings: BoardSettings): Promise<void> {
+  await postBoardCommand(settings);
+}
+
+async function postBoardCommand(payload: object): Promise<void> {
   const response = await fetch("/api/board", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
+    body: JSON.stringify(payload),
   });
   await parseResponse(response);
+}
+
+export async function updateClockAppearance(settings: ClockAppearance): Promise<void> {
+  await postBoardCommand({ command: "clock", ...settings });
+}
+
+export async function setBoardWallpaper(wallpaperId: string): Promise<void> {
+  await postBoardCommand({ command: "wallpaper", action: "set", wallpaper_id: wallpaperId });
+}
+
+export async function syncBoardWallpapers(): Promise<void> {
+  await postBoardCommand({ command: "wallpaper", action: "sync" });
 }

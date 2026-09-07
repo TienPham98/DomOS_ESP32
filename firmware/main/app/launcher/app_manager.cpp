@@ -32,16 +32,45 @@
 
 namespace {
 
+enum class AppRequestType : uint8_t {
+    Launch,
+    ClockSettings,
+};
+
 struct AppLaunchRequest {
+    AppRequestType type = AppRequestType::Launch;
     char app[24];
+    char style[16];
+    char mode[8];
+    uint32_t color = 0;
+};
+
+struct PendingWallpaperCommand {
+    AppManager *manager;
+    bool sync;
+    std::string url;
+    std::string name;
 };
 
 // Voice remains resident. Only one widget HTTP/LittleFS worker may consume
 // another internal-RAM stack at a time; the other app retries on its UI timer.
 std::atomic<bool> s_widget_fetch_busy{false};
+std::atomic<bool> s_wallpaper_command_busy{false};
 // HTTPS certificate verification overflows the old 4 KiB HTTP-only stack.
 // Widget downloads are serialized, so only one such internal stack is live.
 constexpr uint32_t kWidgetFetchStackBytes = 8192;
+
+void ProcessWallpaperCommand(void *context)
+{
+    auto *command = static_cast<PendingWallpaperCommand *>(context);
+    if (command != nullptr) {
+        if (command->sync) command->manager->SyncWallpapersWithServer();
+        else command->manager->SetWallpaperUrl(command->url, command->name);
+        delete command;
+    }
+    s_wallpaper_command_busy = false;
+    vTaskDelete(nullptr);
+}
 
 struct PendingMqttCommand {
     AppManager *manager;
@@ -2237,7 +2266,12 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
             // Bounded work on the LVGL task; producers never touch LVGL.
             for (unsigned i = 0; i < 8 &&
                  xQueueReceive(static_cast<QueueHandle_t>(manager->launch_queue_), &request, 0) == pdTRUE; ++i) {
-                manager->Launch(request.app);
+                if (request.type == AppRequestType::ClockSettings) {
+                    manager->ApplyClockSettings(request.style, request.color, request.mode);
+                    manager->Launch("clock");
+                } else {
+                    manager->Launch(request.app);
+                }
             }
         }, 20, this) == nullptr) {
         vQueueDelete(static_cast<QueueHandle_t>(launch_queue_));
@@ -2306,6 +2340,7 @@ void AppManager::RequestLaunch(const std::string &app)
 {
     AppLaunchRequest request{};
     if (launch_queue_ == nullptr || app.empty() || app.size() >= sizeof(request.app)) return;
+    request.type = AppRequestType::Launch;
     std::memcpy(request.app, app.c_str(), app.size() + 1);
     if (xQueueSend(static_cast<QueueHandle_t>(launch_queue_), &request, 0) != pdTRUE) {
         ESP_LOGE("apps", "Unable to queue launch for '%s'", app.c_str());
@@ -2319,6 +2354,52 @@ void AppManager::CloseCurrent()
         current_->Hide();
     }
     Launch("clock");
+}
+
+bool AppManager::RequestClockSettings(const std::string &style, uint32_t color_hex,
+                                      const std::string &mode)
+{
+    AppLaunchRequest request{};
+    if (launch_queue_ == nullptr || style.empty() || style.size() >= sizeof(request.style) ||
+        mode.empty() || mode.size() >= sizeof(request.mode)) return false;
+    request.type = AppRequestType::ClockSettings;
+    request.color = color_hex;
+    std::memcpy(request.style, style.c_str(), style.size() + 1);
+    std::memcpy(request.mode, mode.c_str(), mode.size() + 1);
+    if (xQueueSend(static_cast<QueueHandle_t>(launch_queue_), &request, 0) != pdTRUE) {
+        ESP_LOGE("apps", "Unable to queue clock settings");
+        return false;
+    }
+    return true;
+}
+
+bool AppManager::RequestWallpaperUrl(const std::string &url, const std::string &name)
+{
+    if (url.empty()) return false;
+    bool available = false;
+    if (!s_wallpaper_command_busy.compare_exchange_strong(available, true)) return false;
+    auto *command = new PendingWallpaperCommand{this, false, url, name};
+    if (xTaskCreatePinnedToCore(ProcessWallpaperCommand, "wallpaper_set", kWidgetFetchStackBytes,
+                                command, 3, nullptr, 0) != pdPASS) {
+        delete command;
+        s_wallpaper_command_busy = false;
+        return false;
+    }
+    return true;
+}
+
+bool AppManager::RequestWallpaperSync()
+{
+    bool available = false;
+    if (!s_wallpaper_command_busy.compare_exchange_strong(available, true)) return false;
+    auto *command = new PendingWallpaperCommand{this, true, "", ""};
+    if (xTaskCreatePinnedToCore(ProcessWallpaperCommand, "wallpaper_sync", kWidgetFetchStackBytes,
+                                command, 3, nullptr, 0) != pdPASS) {
+        delete command;
+        s_wallpaper_command_busy = false;
+        return false;
+    }
+    return true;
 }
 
 void AppManager::ShowNextHomePage()
@@ -2376,11 +2457,7 @@ void AppManager::SetWallpaperUrl(const std::string &url, const std::string &name
         s_current_slot_idx = (s_current_slot_idx + 1) % NUM_WALLPAPER_SLOTS;
         const char *current_path = s_slot_filepaths[s_current_slot_idx];
         DownloadUrlToFile(url, current_path);
-        if (current_ != nullptr && std::string(current_->Id()) == "wallpaper") {
-            current_->Show();
-        } else {
-            Launch("wallpaper");
-        }
+        RequestLaunch("wallpaper");
     }
 }
 
@@ -2518,7 +2595,5 @@ void AppManager::SyncWallpapersWithServer()
         }
     }
 
-    if (current_ != nullptr && std::string(current_->Id()) == "wallpaper") {
-        current_->Show();
-    }
+    RequestLaunch("wallpaper");
 }

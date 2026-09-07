@@ -6,10 +6,11 @@ import hmac
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import quote, urlsplit
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, WebSocket
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -36,6 +37,19 @@ class DeviceSettingsRequest(BaseModel):
     device_id: str | None = None
     volume: int | None = Field(default=None, ge=0, le=100)
     brightness: int | None = Field(default=None, ge=0, le=100)
+
+
+class ClockSettingsRequest(BaseModel):
+    device_id: str | None = None
+    style: Literal["digital", "minimal", "analog", "flip", "word", "binary"]
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    mode: Literal["dark", "light"]
+
+
+class WallpaperCommandRequest(BaseModel):
+    device_id: str | None = None
+    action: Literal["set", "sync"] = "set"
+    wallpaper_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]{1,64}$")
 
 
 def _authorize_device_control(authorization: str | None) -> None:
@@ -66,6 +80,46 @@ async def _active_device(device_id: str | None = None):
     if session is None:
         raise HTTPException(status_code=503, detail="Board is not connected to the cloud gateway")
     return session
+
+
+async def _call_device_tool(session, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = await session.call_device_tool(name, arguments)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=f"Device command timed out: {name}") from exc
+    return _device_tool_payload(result)
+
+
+async def _core_request(
+    method: str,
+    path: str,
+    *,
+    body: bytes | None = None,
+    content_type: str | None = None,
+) -> httpx.Response:
+    headers = {"Content-Type": content_type} if content_type else None
+    try:
+        async with httpx.AsyncClient() as client:
+            return await client.request(
+                method,
+                f"{settings.CORE_BACKEND_URL.rstrip('/')}{path}",
+                content=body,
+                headers=headers,
+                timeout=30.0,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Core backend request failed for %s %s: %s", method, path, exc)
+        raise HTTPException(status_code=502, detail="Core backend is unavailable") from exc
+
+
+def _wallpaper_proxy_url(request: Request, raw_url: str) -> str:
+    filename = Path(urlsplit(raw_url).path).name
+    if not filename:
+        return raw_url
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip()
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    origin = f"{scheme}://{host}".rstrip("/")
+    return f"{origin}/uploads/wallpapers/{quote(filename)}"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -120,11 +174,7 @@ async def device_status(
 ) -> dict[str, Any]:
     _authorize_device_control(authorization)
     session = await _active_device(device_id)
-    try:
-        result = await session.call_device_tool("device.get_status", {})
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Board status request timed out") from exc
-    payload = _device_tool_payload(result)
+    payload = await _call_device_tool(session, "device.get_status", {})
     return {
         **payload,
         "id": session.device_id,
@@ -150,16 +200,59 @@ async def update_device_settings(
         ("volume", request.volume, "speaker.set_volume", "volume"),
         ("brightness", request.brightness, "display.set_brightness", "brightness"),
     )
-    try:
-        for output_key, value, tool_name, argument_name in commands:
-            if value is None:
-                continue
-            result = await session.call_device_tool(tool_name, {argument_name: value})
-            _device_tool_payload(result)
-            applied[output_key] = value
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Board command timed out") from exc
+    for output_key, value, tool_name, argument_name in commands:
+        if value is None:
+            continue
+        await _call_device_tool(session, tool_name, {argument_name: value})
+        applied[output_key] = value
     return {"ok": True, "device_id": session.device_id, "applied": applied}
+
+
+@app.post("/api/device/clock")
+async def update_clock_settings(
+    request: ClockSettingsRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _authorize_device_control(authorization)
+    session = await _active_device(request.device_id)
+    applied = request.model_dump(exclude={"device_id"})
+    await _call_device_tool(session, "clock.configure", applied)
+    return {"ok": True, "device_id": session.device_id, "applied": applied}
+
+
+@app.post("/api/device/wallpaper")
+async def update_device_wallpaper(
+    command: WallpaperCommandRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _authorize_device_control(authorization)
+    session = await _active_device(command.device_id)
+    if command.action == "sync":
+        await _call_device_tool(session, "wallpaper.sync", {})
+        return {"ok": True, "device_id": session.device_id, "applied": {"action": "sync"}}
+    if not command.wallpaper_id:
+        raise HTTPException(status_code=422, detail="wallpaper_id is required for set")
+
+    metadata_response = await _core_request("GET", f"/api/wallpaper/{command.wallpaper_id}")
+    if metadata_response.status_code == 404:
+        raise HTTPException(status_code=404, detail="Wallpaper not found")
+    if not metadata_response.is_success:
+        raise HTTPException(status_code=502, detail="Unable to load wallpaper metadata")
+    metadata = metadata_response.json().get("data", {})
+    raw_url = metadata.get("url")
+    if not isinstance(raw_url, str) or not raw_url:
+        raise HTTPException(status_code=502, detail="Wallpaper metadata has no URL")
+    arguments = {
+        "url": _wallpaper_proxy_url(request, raw_url),
+        "name": str(metadata.get("name") or "wallpaper"),
+    }
+    await _call_device_tool(session, "wallpaper.set", arguments)
+    return {
+        "ok": True,
+        "device_id": session.device_id,
+        "applied": {"action": "set", "wallpaper_id": command.wallpaper_id},
+    }
 
 
 @app.get("/api/v1/conversations")
@@ -210,8 +303,62 @@ async def sync_codex_usage(
     return {"ok": True, "updated_at": stored["updated_at"]}
 
 
+@app.get("/api/wallpapers")
+async def list_wallpapers(request: Request) -> JSONResponse:
+    response = await _core_request("GET", "/api/wallpapers")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Invalid response from core backend") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if response.is_success and isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            for field in ("url", "thumbnail_url"):
+                raw_url = item.get(field)
+                if isinstance(raw_url, str) and raw_url:
+                    item[field] = _wallpaper_proxy_url(request, raw_url)
+    return JSONResponse(content=payload, status_code=response.status_code)
+
+
+@app.post("/api/wallpaper")
+async def upload_wallpaper(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    _authorize_device_control(authorization)
+    response = await _core_request(
+        "POST",
+        "/api/wallpaper",
+        body=await request.body(),
+        content_type=request.headers.get("content-type"),
+    )
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/json"),
+    )
+
+
+@app.delete("/api/wallpaper/{wallpaper_id}")
+async def delete_wallpaper(
+    wallpaper_id: str,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    _authorize_device_control(authorization)
+    if not wallpaper_id or len(wallpaper_id) > 64 or not wallpaper_id.replace("-", "").isalnum():
+        raise HTTPException(status_code=400, detail="Invalid wallpaper id")
+    response = await _core_request("DELETE", f"/api/wallpaper/{wallpaper_id}")
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/json"),
+    )
+
+
 @app.get("/api/wallpapers/slideshow")
-async def proxy_wallpapers_slideshow() -> JSONResponse:
+async def proxy_wallpapers_slideshow(request: Request) -> JSONResponse:
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -221,7 +368,7 @@ async def proxy_wallpapers_slideshow() -> JSONResponse:
         data = response.json()
         wallpapers = data.get("data", {}).get("wallpapers", [])
         data.get("data", {})["wallpapers"] = [
-            url.replace(":8081", ":8000") for url in wallpapers
+            _wallpaper_proxy_url(request, url) for url in wallpapers
         ]
         return JSONResponse(content=data, status_code=response.status_code)
     except (httpx.HTTPError, ValueError) as exc:

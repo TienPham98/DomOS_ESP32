@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Check, Paintbrush, Type, Sun, Moon, Clock } from "lucide-react";
 import { PageHeader, Section } from "@/components/dashboard-primitives";
 import { Button } from "@/components/ui/button";
+import { updateClockAppearance, type ClockAppearance } from "@/lib/board-api";
 import { demoThemes } from "@/lib/demo-data";
 
 const presetColors = [
@@ -28,7 +29,7 @@ const presetThemes = [
   { id: "amber-sunset", name: "Amber Arc", primary_color: "#f59e0b", bg_color: "#180d04", font: "Space Grotesk", clock_style: "analog" },
 ];
 
-const clockStylesList = [
+const clockStylesList: Array<{ id: ClockAppearance["style"]; name: string; desc: string }> = [
   { id: "digital", name: "Digital", desc: "Classic bold numbers with divider & date" },
   { id: "minimal", name: "Minimal", desc: "Clean typography focused layout" },
   { id: "analog", name: "Futuristic Arc", desc: "Modern arc gauge & seconds ring" },
@@ -41,7 +42,7 @@ export default function ThemesPage() {
   const themes = demoThemes.length > 0 ? demoThemes : presetThemes;
   const [activeTheme, setActiveTheme] = useState(themes[0].id);
   const [primaryColor, setPrimaryColor] = useState("#06b6d4");
-  const [selectedClockStyle, setSelectedClockStyle] = useState("digital");
+  const [selectedClockStyle, setSelectedClockStyle] = useState<ClockAppearance["style"]>("digital");
   const [selectedFont, setSelectedFont] = useState("Inter");
   const [selectedRoundness, setSelectedRoundness] = useState("medium");
   const [mode, setMode] = useState<"dark" | "light">("dark");
@@ -51,39 +52,24 @@ export default function ThemesPage() {
   const [applying, setApplying] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const defaultDevIp = process.env.NEXT_PUBLIC_DEVICE_IP || "device.local";
-  const [deviceIp, setDeviceIp] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("domos_device_ip") || defaultDevIp;
-    }
-    return defaultDevIp;
-  });
-
-
-
-  const handleIpChange = (newIp: string) => {
-    setDeviceIp(newIp);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("domos_device_ip", newIp);
-    }
-  };
-
-  const syncToDevice = async (style = selectedClockStyle, color = primaryColor, currentMode = mode) => {
+  const syncToDevice = async (
+    style: ClockAppearance["style"] = selectedClockStyle,
+    color = primaryColor,
+    currentMode = mode,
+  ) => {
     setApplying(true);
-    const targetHost = deviceIp.includes(":") ? deviceIp : `${deviceIp}:80`;
-    setStatusMsg(`Syncing clock ('${style}', ${color}, ${currentMode}) to ${targetHost}...`);
+    setStatusMsg(`Syncing clock ('${style}', ${color}, ${currentMode}) through the cloud...`);
     try {
-      const res = await fetch(`http://${targetHost}/api/clock`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ style, color, mode: currentMode }),
+      await updateClockAppearance({
+        style,
+        color,
+        mode: currentMode,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      setStatusMsg(`Synced to device: ${style.toUpperCase()} (${currentMode.toUpperCase()})`);
+      setStatusMsg(`Synced through cloud: ${style.toUpperCase()} (${currentMode.toUpperCase()})`);
       setTimeout(() => setStatusMsg(null), 3000);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown device error";
-      setStatusMsg(`Device Sync Error (${targetHost}): ${message}`);
+      setStatusMsg(`Device Sync Error: ${message}`);
       setTimeout(() => setStatusMsg(null), 4000);
     } finally {
       setApplying(false);
@@ -102,14 +88,6 @@ export default function ThemesPage() {
         badge="Design System"
         action={
           <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={deviceIp}
-              onChange={(e) => handleIpChange(e.target.value)}
-              placeholder="Device IP / Host"
-              className="px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white font-mono focus:border-cyan-500 focus:outline-none w-36"
-              title="Target ESP32 Device IP or Hostname"
-            />
             <Button className="gap-2" onClick={handleApplyTheme} disabled={applying}>
               <Paintbrush className="w-4 h-4" /> {applying ? "Applying..." : "Apply to Device"}
             </Button>

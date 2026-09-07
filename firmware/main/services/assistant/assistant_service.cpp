@@ -624,6 +624,46 @@ void AssistantService::HandleMcp(const char *json)
                 cJSON_AddItemToArray(set_brightness_required, cJSON_CreateString("brightness"));
                 cJSON_AddItemToArray(tools, set_brightness_tool);
 
+                cJSON *clock_tool = cJSON_CreateObject();
+                cJSON_AddStringToObject(clock_tool, "name", "clock.configure");
+                cJSON_AddStringToObject(clock_tool, "description", "Configure and open the clock application");
+                cJSON *clock_schema = cJSON_AddObjectToObject(clock_tool, "inputSchema");
+                cJSON_AddStringToObject(clock_schema, "type", "object");
+                cJSON *clock_properties = cJSON_AddObjectToObject(clock_schema, "properties");
+                cJSON *clock_style = cJSON_AddObjectToObject(clock_properties, "style");
+                cJSON_AddStringToObject(clock_style, "type", "string");
+                cJSON *clock_color = cJSON_AddObjectToObject(clock_properties, "color");
+                cJSON_AddStringToObject(clock_color, "type", "string");
+                cJSON *clock_mode = cJSON_AddObjectToObject(clock_properties, "mode");
+                cJSON_AddStringToObject(clock_mode, "type", "string");
+                cJSON *clock_required = cJSON_AddArrayToObject(clock_schema, "required");
+                cJSON_AddItemToArray(clock_required, cJSON_CreateString("style"));
+                cJSON_AddItemToArray(clock_required, cJSON_CreateString("color"));
+                cJSON_AddItemToArray(clock_required, cJSON_CreateString("mode"));
+                cJSON_AddItemToArray(tools, clock_tool);
+
+                cJSON *wallpaper_tool = cJSON_CreateObject();
+                cJSON_AddStringToObject(wallpaper_tool, "name", "wallpaper.set");
+                cJSON_AddStringToObject(wallpaper_tool, "description", "Download and open a cloud wallpaper");
+                cJSON *wallpaper_schema = cJSON_AddObjectToObject(wallpaper_tool, "inputSchema");
+                cJSON_AddStringToObject(wallpaper_schema, "type", "object");
+                cJSON *wallpaper_properties = cJSON_AddObjectToObject(wallpaper_schema, "properties");
+                cJSON *wallpaper_url = cJSON_AddObjectToObject(wallpaper_properties, "url");
+                cJSON_AddStringToObject(wallpaper_url, "type", "string");
+                cJSON *wallpaper_name = cJSON_AddObjectToObject(wallpaper_properties, "name");
+                cJSON_AddStringToObject(wallpaper_name, "type", "string");
+                cJSON *wallpaper_required = cJSON_AddArrayToObject(wallpaper_schema, "required");
+                cJSON_AddItemToArray(wallpaper_required, cJSON_CreateString("url"));
+                cJSON_AddItemToArray(tools, wallpaper_tool);
+
+                cJSON *wallpaper_sync_tool = cJSON_CreateObject();
+                cJSON_AddStringToObject(wallpaper_sync_tool, "name", "wallpaper.sync");
+                cJSON_AddStringToObject(wallpaper_sync_tool, "description", "Sync wallpapers from the cloud gateway");
+                cJSON *wallpaper_sync_schema = cJSON_AddObjectToObject(wallpaper_sync_tool, "inputSchema");
+                cJSON_AddStringToObject(wallpaper_sync_schema, "type", "object");
+                cJSON_AddObjectToObject(wallpaper_sync_schema, "properties");
+                cJSON_AddItemToArray(tools, wallpaper_sync_tool);
+
                 cJSON *launch_tool = cJSON_CreateObject();
                 cJSON_AddStringToObject(launch_tool, "name", "app.launch");
                 cJSON_AddStringToObject(launch_tool, "description", "Open a DomOS application");
@@ -717,6 +757,51 @@ void AssistantService::HandleMcp(const char *json)
                         snprintf(result_text, sizeof(result_text), "display brightness set to %d",
                                  brightness_j->valueint);
                         SendMcpResult(req_id, result_text);
+                    }
+                } else if (strcmp(name, "clock.configure") == 0) {
+                    cJSON *style_j = args ? cJSON_GetObjectItemCaseSensitive(args, "style") : nullptr;
+                    cJSON *color_j = args ? cJSON_GetObjectItemCaseSensitive(args, "color") : nullptr;
+                    cJSON *mode_j = args ? cJSON_GetObjectItemCaseSensitive(args, "mode") : nullptr;
+                    const char *style = cJSON_IsString(style_j) ? style_j->valuestring : "";
+                    const char *color = cJSON_IsString(color_j) ? color_j->valuestring : "";
+                    const char *mode = cJSON_IsString(mode_j) ? mode_j->valuestring : "";
+                    const bool valid_style = strcmp(style, "digital") == 0 || strcmp(style, "minimal") == 0 ||
+                                             strcmp(style, "analog") == 0 || strcmp(style, "flip") == 0 ||
+                                             strcmp(style, "word") == 0 || strcmp(style, "binary") == 0;
+                    const bool valid_mode = strcmp(mode, "dark") == 0 || strcmp(mode, "light") == 0;
+                    unsigned int color_hex = 0;
+                    const bool valid_color = strlen(color) == 7 && color[0] == '#' &&
+                                             sscanf(color + 1, "%06x", &color_hex) == 1;
+                    if (!valid_style || !valid_mode || !valid_color) {
+                        SendMcpResult(req_id, "invalid clock settings", true);
+                    } else if (apps_ == nullptr) {
+                        SendMcpResult(req_id, "app manager is not ready", true);
+                    } else if (!apps_->RequestClockSettings(style, color_hex, mode)) {
+                        SendMcpResult(req_id, "clock command queue is full", true);
+                    } else {
+                        SendMcpResult(req_id, "clock settings queued");
+                    }
+                } else if (strcmp(name, "wallpaper.set") == 0) {
+                    cJSON *url_j = args ? cJSON_GetObjectItemCaseSensitive(args, "url") : nullptr;
+                    cJSON *name_j = args ? cJSON_GetObjectItemCaseSensitive(args, "name") : nullptr;
+                    const char *url = cJSON_IsString(url_j) ? url_j->valuestring : "";
+                    const char *wallpaper_name = cJSON_IsString(name_j) ? name_j->valuestring : "";
+                    if (strncmp(url, "https://", 8) != 0 || strlen(url) > 512 || strlen(wallpaper_name) > 96) {
+                        SendMcpResult(req_id, "wallpaper URL must be a valid HTTPS URL", true);
+                    } else if (apps_ == nullptr) {
+                        SendMcpResult(req_id, "app manager is not ready", true);
+                    } else if (!apps_->RequestWallpaperUrl(url, wallpaper_name)) {
+                        SendMcpResult(req_id, "wallpaper worker is busy", true);
+                    } else {
+                        SendMcpResult(req_id, "wallpaper download queued");
+                    }
+                } else if (strcmp(name, "wallpaper.sync") == 0) {
+                    if (apps_ == nullptr) {
+                        SendMcpResult(req_id, "app manager is not ready", true);
+                    } else if (!apps_->RequestWallpaperSync()) {
+                        SendMcpResult(req_id, "wallpaper worker is busy", true);
+                    } else {
+                        SendMcpResult(req_id, "wallpaper sync queued");
                     }
                 } else if (strcmp(name, "app.launch") == 0) {
                     cJSON *app_j = args ? cJSON_GetObjectItemCaseSensitive(args, "app") : nullptr;

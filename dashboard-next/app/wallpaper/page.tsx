@@ -4,23 +4,14 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Image, Trash2, Send, CheckCircle2, CloudUpload } from "lucide-react";
 import { PageHeader, EmptyState } from "@/components/dashboard-primitives";
 import { Button } from "@/components/ui/button";
+import { setBoardWallpaper, syncBoardWallpapers } from "@/lib/board-api";
 import { demoWallpapers } from "@/lib/demo-data";
+import {
+  deleteCloudWallpaper,
+  fetchCloudWallpapers,
+  uploadCloudWallpaper,
+} from "@/lib/wallpaper-api";
 import type { Wallpaper } from "@/lib/api";
-
-const getBackendUrl = () => {
-  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-};
-
-interface BackendWallpaper {
-  id: string;
-  name: string;
-  url: string;
-  thumbnail_url?: string;
-  width?: number;
-  height?: number;
-  size_bytes?: number;
-  created_at: string;
-}
 
 export default function WallpaperPage() {
   const [wallpapers, setWallpapers] = useState<Wallpaper[]>(demoWallpapers);
@@ -30,33 +21,12 @@ export default function WallpaperPage() {
   const [pushStatus, setPushStatus] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const deviceIp = process.env.NEXT_PUBLIC_DEVICE_IP || "device.local";
-  const serverIp = process.env.NEXT_PUBLIC_HOST_IP || new URL(getBackendUrl()).hostname;
-  const defaultServerIp = serverIp;
-
-
   const loadWallpapersFromBackend = useCallback(async (): Promise<Wallpaper[] | null> => {
-    const backendUrl = getBackendUrl();
     try {
-      const res = await fetch(`${backendUrl}/api/wallpapers`);
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data && Array.isArray(json.data)) {
-          const list: Wallpaper[] = json.data.map((item: BackendWallpaper) => ({
-            id: item.id,
-            filename: item.name,
-            url: item.url.startsWith("http") ? item.url : `${backendUrl}${item.url}`,
-            thumbnail_url: item.thumbnail_url ? (item.thumbnail_url.startsWith("http") ? item.thumbnail_url : `${backendUrl}${item.thumbnail_url}`) : undefined,
-            width: item.width || 320,
-            height: item.height || 240,
-            size: item.size_bytes || 0,
-            created_at: item.created_at,
-          }));
-          return list;
-        }
-      }
+      return await fetchCloudWallpapers();
     } catch (e) {
-      console.warn("Backend offline, using fallback list:", e);
+      console.warn("Cloud wallpaper API unavailable:", e);
+      setPushStatus("Cloud backend is unavailable. Please try again shortly.");
     }
     return null;
   }, []);
@@ -76,43 +46,14 @@ export default function WallpaperPage() {
     if (!target) return;
 
     setPushing(true);
-    const targetHost = deviceIp.includes(":") ? deviceIp : `${deviceIp}:80`;
-    
-    // Resolve PC Server IP so ESP32 can download wallpaper over local Wi-Fi network
-    let hostForDevice = serverIp;
-    if (!hostForDevice && typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-      hostForDevice = window.location.hostname;
-    }
-    if (!hostForDevice) {
-      hostForDevice = defaultServerIp;
-    }
-
-    const playableUrl = target.url.replace(/localhost|127\.0\.0\.1/g, hostForDevice);
-
-    setPushStatus(`Sending 320x240 JPEG stream URL (${playableUrl}) to ${targetHost}...`);
+    setPushStatus(`Sending '${target.filename}' through the cloud gateway...`);
     try {
-      const res = await fetch(`http://${targetHost}/api/wallpaper`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ style: "wallpaper", wallpaper_url: playableUrl, name: target.filename }),
-      });
-
-      if (!res.ok) {
-        await fetch(`http://${targetHost}/api/clock`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ style: "wallpaper", wallpaper_url: playableUrl, name: target.filename }),
-        });
-      }
-
-      setPushStatus(`Wallpaper '${target.filename}' active on ${targetHost} (Zero RGB RAM, JPEG stream)!`);
+      await setBoardWallpaper(target.id);
+      setPushStatus(`Wallpaper '${target.filename}' queued on the connected board.`);
       setTimeout(() => setPushStatus(null), 4000);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : "Unknown device error";
-      const msg = errorMessage === "Failed to fetch"
-        ? "ESP32 IP unreachable. Please check board Wi-Fi connection and update 'Device IP' input above."
-        : errorMessage;
-      setPushStatus(`Device Sync Error (${targetHost}): ${msg}`);
+      setPushStatus(`Device Sync Error: ${errorMessage}`);
       setTimeout(() => setPushStatus(null), 7000);
     } finally {
       setPushing(false);
@@ -124,63 +65,25 @@ export default function WallpaperPage() {
     const fileList = Array.from(files).filter((f) => f.type.startsWith("image/"));
     for (const file of fileList) {
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch(`${getBackendUrl()}/api/wallpaper`, {
-          method: "POST",
-          body: formData,
-        });
-        if (res.ok) {
-          setPushStatus(`Backend auto-resized '${file.name}' to 320x240 JPEG Q85 + thumbnail!`);
-          setTimeout(() => setPushStatus(null), 3500);
-          const refreshed = await loadWallpapersFromBackend();
-          if (refreshed) setWallpapers(refreshed);
-
-          // Immediately sync with ESP32 device
-          const targetHost = deviceIp.includes(":") ? deviceIp : `${deviceIp}:80`;
-          fetch(`http://${targetHost}/api/wallpaper`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "sync" }),
-          }).catch(() => null);
-        } else {
-          const newWp: Wallpaper = {
-            id: `wp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            filename: file.name,
-            url: URL.createObjectURL(file),
-            width: 320,
-            height: 240,
-            size: file.size,
-            created_at: new Date().toISOString(),
-          };
-          setWallpapers((prev) => [newWp, ...prev]);
-        }
-      } catch {
-        const newWp: Wallpaper = {
-          id: `wp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          filename: file.name,
-          url: URL.createObjectURL(file),
-          width: 320,
-          height: 240,
-          size: file.size,
-          created_at: new Date().toISOString(),
-        };
-        setWallpapers((prev) => [newWp, ...prev]);
+        await uploadCloudWallpaper(file);
+        const refreshed = await loadWallpapersFromBackend();
+        if (refreshed) setWallpapers(refreshed);
+        await syncBoardWallpapers();
+        setPushStatus(`Uploaded and synced '${file.name}' through the cloud gateway.`);
+        setTimeout(() => setPushStatus(null), 3500);
+      } catch (error) {
+        setPushStatus(`Upload Error: ${error instanceof Error ? error.message : "Unknown error"}`);
       }
     }
-  }, [deviceIp, loadWallpapersFromBackend]);
+  }, [loadWallpapersFromBackend]);
 
   const handleDelete = async (id: string) => {
     try {
-      await fetch(`${getBackendUrl()}/api/wallpaper/${id}`, { method: "DELETE" });
-      const targetHost = deviceIp.includes(":") ? deviceIp : `${deviceIp}:80`;
-      await fetch(`http://${targetHost}/api/wallpaper`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "sync", deleted_id: id }),
-      }).catch(() => null);
+      await deleteCloudWallpaper(id);
+      await syncBoardWallpapers();
     } catch (e) {
-      console.warn("Delete backend failed:", e);
+      setPushStatus(`Delete Error: ${e instanceof Error ? e.message : "Unknown error"}`);
+      return;
     }
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
     if (selected === id) setSelected(null);
@@ -194,26 +97,6 @@ export default function WallpaperPage() {
         badge={`${wallpapers.length} images`}
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 px-2.5 py-1.5 rounded-lg text-xs">
-              <span className="text-slate-400 font-medium">Device:</span>
-              <input
-                type="text"
-                value={deviceIp}
-                readOnly
-                className="bg-transparent text-white font-mono w-28 text-xs"
-                title="Fixed ESP32 device IP"
-              />
-            </div>
-            <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 px-2.5 py-1.5 rounded-lg text-xs">
-              <span className="text-slate-400 font-medium">Server IP:</span>
-              <input
-                type="text"
-                value={serverIp}
-                readOnly
-                className="bg-transparent text-white font-mono w-36 text-xs"
-                title="Fixed DomOS server IP"
-              />
-            </div>
             {selected && (
               <Button className="gap-2" onClick={() => handlePushToDevice()} disabled={pushing}>
                 <Send className="w-4 h-4" /> {pushing ? "Applying..." : "Set on Device"}

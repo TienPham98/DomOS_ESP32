@@ -42,14 +42,29 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
+  let body: Record<string, unknown>;
   try {
-    body = await request.json();
+    const parsed: unknown = await request.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+    body = parsed as Record<string, unknown>;
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  return proxy("/api/device/settings", {
+
+  const command = typeof body.command === "string" ? body.command : "settings";
+  const paths: Record<string, string> = {
+    settings: "/api/device/settings",
+    clock: "/api/device/clock",
+    wallpaper: "/api/device/wallpaper",
+  };
+  const path = paths[command];
+  if (!path) {
+    return Response.json({ error: "Unsupported board command" }, { status: 400 });
+  }
+  const { command: _command, ...payload } = body;
+  void _command;
+  return proxy(path, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 class ES3C28PBoard;
@@ -18,6 +19,10 @@ public:
                MediaService *media, StorageManager *storage, AssistantService *assistant = nullptr);
     void Launch(const std::string &app);
     void RequestLaunch(const std::string &app);
+    bool RequestClockSettings(const std::string &style, uint32_t color_hex,
+                              const std::string &mode);
+    bool RequestWallpaperUrl(const std::string &url, const std::string &name = "");
+    bool RequestWallpaperSync();
     void CloseCurrent();
     void ShowNextHomePage();
     void ApplyClockSettings(const std::string &style, uint32_t color_hex, const std::string &mode = "");

@@ -1,4 +1,10 @@
-import { fetchBoardStatus, updateBoardSettings } from "./board-api";
+import {
+  fetchBoardStatus,
+  setBoardWallpaper,
+  syncBoardWallpapers,
+  updateBoardSettings,
+  updateClockAppearance,
+} from "./board-api";
 
 describe("board cloud API", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -41,5 +47,24 @@ describe("board cloud API", () => {
     }));
 
     await expect(fetchBoardStatus()).rejects.toThrow("Board offline");
+  });
+
+  it("routes clock and wallpaper commands through the cloud proxy", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateClockAppearance({ style: "minimal", color: "#06b6d4", mode: "dark" });
+    await setBoardWallpaper("wallpaper-1");
+    await syncBoardWallpapers();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/board", expect.objectContaining({
+      body: JSON.stringify({ command: "clock", style: "minimal", color: "#06b6d4", mode: "dark" }),
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/board", expect.objectContaining({
+      body: JSON.stringify({ command: "wallpaper", action: "set", wallpaper_id: "wallpaper-1" }),
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/board", expect.objectContaining({
+      body: JSON.stringify({ command: "wallpaper", action: "sync" }),
+    }));
   });
 });
