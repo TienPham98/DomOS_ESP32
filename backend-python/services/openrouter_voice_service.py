@@ -73,26 +73,38 @@ TOOLS = [
     {"type": "function", "function": {"name": "speaker.set_volume", "description": "Đặt âm lượng loa từ 0 đến 100", "parameters": {"type": "object", "properties": {"volume": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["volume"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "speaker.adjust_volume", "description": "Tăng hoặc giảm âm lượng loa theo delta", "parameters": {"type": "object", "properties": {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}, "required": ["delta"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "display.adjust_brightness", "description": "Tăng hoặc giảm độ sáng màn hình theo delta", "parameters": {"type": "object", "properties": {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}, "required": ["delta"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "display.set_brightness", "description": "Đặt độ sáng màn hình từ 0 đến 100", "parameters": {"type": "object", "properties": {"brightness": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["brightness"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "app.launch", "description": "Mở ứng dụng DomOS", "parameters": {"type": "object", "properties": {"app": {"type": "string", "enum": ["wallpaper", "clock", "man-utd", "codex-credit"]}}, "required": ["app"], "additionalProperties": False}}},
 ]
 
 
 @dataclass
 class VoiceRegistry:
-    sessions: set[str] = field(default_factory=set)
+    sessions: dict[str, VoiceSession] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def count(self) -> int:
         return len(self.sessions)
 
-    async def add(self, session_id: str) -> None:
+    async def add(self, session: VoiceSession) -> None:
         async with self.lock:
-            self.sessions.add(session_id)
+            self.sessions[session.session_id] = session
 
     async def remove(self, session_id: str) -> None:
         async with self.lock:
-            self.sessions.discard(session_id)
+            self.sessions.pop(session_id, None)
+
+    async def get(self, device_id: str | None = None) -> VoiceSession | None:
+        async with self.lock:
+            candidates = reversed(tuple(self.sessions.values()))
+            if device_id:
+                wanted = device_id.casefold()
+                return next(
+                    (session for session in candidates if session.device_id.casefold() == wanted),
+                    None,
+                )
+            return next(candidates, None)
 
 
 voice_registry = VoiceRegistry()
@@ -1011,7 +1023,7 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
         hello = json.loads(raw)
         validate_dom_hello(hello)
-        await voice_registry.add(session_id)
+        await voice_registry.add(session)
         await session.send_json({
             "type": "hello", "provider": primary_llm_provider(), "transport": "websocket",
             "audio_params": {"codec": "pcm", "sample_rate": 16_000, "channels": 1, "frame_duration": 60},

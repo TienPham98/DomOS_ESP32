@@ -29,16 +29,16 @@ export default function DashboardPage() {
 
   const devices = deviceList;
   const totalCount = devices.length;
-  const avgRssi = board ? board.wifi.rssi : null;
-  const chartData = telemetry;
-  const storagePercent = board ? Math.round((board.storage_used / board.storage_total) * 100) : null;
+  const storagePercent = board?.storage_total
+    ? Math.round(((board.storage_used ?? 0) / board.storage_total) * 100)
+    : null;
 
   return (
     <>
       <PageHeader
         title="Dashboard"
         subtitle="ES3C28P Fleet Control"
-        badge={board ? `Connected: ${board.wifi.ip}` : error ? "Disconnected" : "Connecting..."}
+        badge={board ? "Connected via Cloud" : error ? "Disconnected" : "Connecting..."}
       />
 
       {/* ── Metric Cards ───────────────────────────── */}
@@ -47,7 +47,7 @@ export default function DashboardPage() {
           icon={Monitor}
           label="Devices"
           value={totalCount}
-          detail={board ? `1 online (IP: ${board.wifi.ip})` : "0 online · 0 offline"}
+          detail={board ? "1 online via AI Gateway" : "0 online · 0 offline"}
           color="cyan"
           trend="up"
           delay={0}
@@ -55,10 +55,10 @@ export default function DashboardPage() {
         <MetricCard
           icon={Wifi}
           label="Avg. RSSI"
-          value={avgRssi !== null ? `${avgRssi} dBm` : "--"}
-          detail={board ? `Connected to ${board.wifi.ssid}` : "Signal strength across fleet"}
+          value="--"
+          detail={board ? "Cloud WebSocket session" : "Signal strength unavailable"}
           color="green"
-          trend={avgRssi !== null && avgRssi > -55 ? "up" : "neutral"}
+          trend="neutral"
           delay={60}
         />
         <MetricCard
@@ -74,7 +74,13 @@ export default function DashboardPage() {
           icon={HardDrive}
           label="Avg. Storage"
           value={storagePercent !== null ? `${storagePercent}%` : "--"}
-          detail={board ? `Heap Free: ${Math.round(board.free_heap / 1024)} KB` : "LittleFS usage across fleet"}
+          detail={
+            typeof board?.free_heap === "number"
+              ? `Heap Free: ${Math.round(board.free_heap / 1024)} KB`
+              : board
+                ? "Telemetry unavailable"
+                : "LittleFS usage across fleet"
+          }
           color="orange"
           delay={180}
         />
@@ -84,121 +90,31 @@ export default function DashboardPage() {
         {/* ── RSSI Chart ───────────────────────────── */}
         <Section title="Signal Strength (24h)">
           <div className="h-52">
-            {chartData.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-slate-500 text-sm font-medium">
-                No signal telemetry data
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData}>
-                  <defs>
-                    <linearGradient id="rssiGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#06b6d4" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis
-                    dataKey="time"
-                    stroke="#334155"
-                    tick={{ fill: "#64748b", fontSize: 11 }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    stroke="#334155"
-                    tick={{ fill: "#64748b", fontSize: 11 }}
-                    axisLine={false}
-                    tickLine={false}
-                    domain={[-80, -30]}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "#0b1528",
-                      border: "1px solid #1a2d4d",
-                      borderRadius: 12,
-                      color: "#e2e8f0",
-                      fontSize: 13,
-                    }}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="rssi"
-                    stroke="#06b6d4"
-                    strokeWidth={2}
-                    fill="url(#rssiGrad)"
-                    dot={false}
-                    activeDot={{ r: 4, fill: "#06b6d4" }}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
+            <div className="h-full flex items-center justify-center text-slate-500 text-sm font-medium">
+              Signal telemetry is available only on the local network
+            </div>
           </div>
         </Section>
 
         {/* ── Temperature Chart ────────────────────── */}
         <Section title="CPU Temperature (24h)">
           <div className="h-52">
-            {chartData.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-slate-500 text-sm font-medium">
-                No temperature telemetry data
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData}>
-                  <defs>
-                    <linearGradient id="tempGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f97316" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#f97316" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis
-                    dataKey="time"
-                    stroke="#334155"
-                    tick={{ fill: "#64748b", fontSize: 11 }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    stroke="#334155"
-                    tick={{ fill: "#64748b", fontSize: 11 }}
-                    axisLine={false}
-                    tickLine={false}
-                    domain={[30, 55]}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "#0b1528",
-                      border: "1px solid #1a2d4d",
-                      borderRadius: 12,
-                      color: "#e2e8f0",
-                      fontSize: 13,
-                    }}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="temp"
-                    stroke="#f97316"
-                    strokeWidth={2}
-                    fill="url(#tempGrad)"
-                    dot={false}
-                    activeDot={{ r: 4, fill: "#f97316" }}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
+            <div className="h-full flex items-center justify-center text-slate-500 text-sm font-medium">
+              Temperature telemetry is not reported by this board
+            </div>
           </div>
         </Section>
 
         {/* ── Free Heap Chart ──────────────────────── */}
         <Section title="Free Heap (24h)">
           <div className="h-52">
-            {chartData.length === 0 ? (
+            {telemetry.length === 0 ? (
               <div className="h-full flex items-center justify-center text-slate-500 text-sm font-medium">
                 No memory telemetry data
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData}>
+                <AreaChart data={telemetry}>
                   <defs>
                     <linearGradient id="heapGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="#a855f7" stopOpacity={0.3} />
@@ -261,7 +177,7 @@ export default function DashboardPage() {
           <div className="space-y-3">
             {devices.length === 0 ? (
               <div className="py-8 text-center text-sm text-slate-500">
-                {error ? `Disconnected: ${error}` : "Connecting to board on network..."}
+                {error ? `Disconnected: ${error}` : "Connecting to board through cloud gateway..."}
               </div>
             ) : (
               devices.map((device) => (
@@ -275,7 +191,7 @@ export default function DashboardPage() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-white">{device.name}</p>
-                      <p className="text-xs text-slate-500">{device.ip} · v{device.firmware}</p>
+                      <p className="text-xs text-slate-500">Cloud WebSocket · v{device.firmware}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
@@ -306,7 +222,11 @@ export default function DashboardPage() {
           <div className="space-y-0.5 font-mono text-xs max-h-80 overflow-y-auto">
             {logs.length === 0 ? (
               <div className="py-8 text-center text-sm font-sans text-slate-500">
-                {error ? `Board disconnected (${error})` : "Connecting to board logs..."}
+                {error
+                  ? `Board disconnected (${error})`
+                  : board
+                    ? "Cloud connection active · device logs are available only on the local network"
+                    : "Connecting to board through cloud gateway..."}
               </div>
             ) : (
               logs.map((log, i) => (

@@ -1,6 +1,6 @@
 "use client";
 
-import { Monitor, Wifi, HardDrive, Clock, RefreshCw } from "lucide-react";
+import { Monitor, Cloud, HardDrive, Clock, RefreshCw } from "lucide-react";
 import { PageHeader, StatusBadge, StorageBar } from "@/components/dashboard-primitives";
 import { Button } from "@/components/ui/button";
 import { useBoard } from "@/hooks/use-board";
@@ -36,7 +36,7 @@ export default function DevicesPage() {
       <div className="grid gap-6">
         {devices.length === 0 ? (
           <div className="dom-card p-12 text-center text-slate-500 text-sm">
-            {error ? `Connection error: ${error}` : "Searching for ES3C28P board on network..."}
+            {error ? `Connection error: ${error}` : "Connecting to ES3C28P through cloud gateway..."}
           </div>
         ) : (
           devices.map((device, i) => (
@@ -64,11 +64,11 @@ export default function DevicesPage() {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
                 <div>
                   <div className="flex items-center gap-1.5 text-slate-500 mb-1">
-                    <Wifi className="w-3.5 h-3.5" />
-                    <span className="text-xs">Network</span>
+                    <Cloud className="w-3.5 h-3.5" />
+                    <span className="text-xs">Connection</span>
                   </div>
-                  <p className="text-sm font-medium text-white">{device.ip}</p>
-                  <p className="text-xs text-slate-600">{device.rssi} dBm</p>
+                  <p className="text-sm font-medium text-white">Cloud gateway</p>
+                  <p className="text-xs text-emerald-400">WebSocket active</p>
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5 text-slate-500 mb-1">

@@ -9,7 +9,7 @@ const board = {
   mac: "B8:1F:3F:C3:97:54",
   firmware: "0.5.0",
   online: true,
-  wifi: { ssid: "Dom_12", ip: "device.local", rssi: -42 },
+  connection: "cloud" as const,
   free_heap: 120000,
   storage_used: 100,
   storage_total: 1000,
@@ -18,24 +18,22 @@ const board = {
 describe("useBoard", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("fetches status and logs in parallel and maps a dashboard device", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => board })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => [{ ts: "now", level: "INFO", source: "wifi", msg: "connected" }],
-      });
+  it("fetches status through the same-origin cloud proxy", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => board });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result, unmount } = renderHook(() => useBoard());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result.current.board?.wifi.ip).toBe("device.local");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/board",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+    expect(result.current.board?.connection).toBe("cloud");
     expect(result.current.deviceList[0].firmware).toBe("0.5.0");
-    expect(result.current.logs).toHaveLength(1);
-    expect(result.current.telemetry[0].rssi).toBe(-42);
+    expect(result.current.logs).toHaveLength(0);
+    expect(result.current.telemetry[0].heap).toBe(120000);
     unmount();
   });
 

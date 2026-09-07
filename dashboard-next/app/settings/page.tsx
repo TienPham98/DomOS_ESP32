@@ -1,37 +1,65 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Wifi,
   Sun,
+  Volume2,
   Monitor,
   HardDrive,
-  Globe,
   Shield,
   Cpu,
-  Radio,
   Save,
   RotateCcw,
   Info,
 } from "lucide-react";
 import { PageHeader, Section, StorageBar } from "@/components/dashboard-primitives";
 import { Button } from "@/components/ui/button";
+import { fetchBoardStatus, updateBoardSettings } from "@/lib/board-api";
 
 export default function SettingsPage() {
   const [brightness, setBrightness] = useState(75);
-  const wifiSSID = "Dom_12";
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-  const mqttBroker = process.env.NEXT_PUBLIC_MQTT_URL || `mqtt://${new URL(apiUrl).hostname}:1883`;
-  const [mdns, setMdns] = useState("domos");
+  const [volume, setVolume] = useState(80);
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    fetchBoardStatus(controller.signal)
+      .then((status) => {
+        if (!active) return;
+        setConnected(status.online);
+        if (typeof status.volume === "number") setVolume(status.volume);
+        if (typeof status.brightness === "number") setBrightness(status.brightness);
+      })
+      .catch((error: unknown) => {
+        if (!active || (error instanceof DOMException && error.name === "AbortError")) return;
+        setConnected(false);
+        setStatusMsg(`Error: ${error instanceof Error ? error.message : "Board unavailable"}`);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, []);
+
+  const handleReset = () => {
+    setVolume(80);
+    setBrightness(75);
+  };
+
   const handleSave = async () => {
     setSaving(true);
-    setStatusMsg("Saving system configuration to board NVS...");
+    setStatusMsg("Sending settings to the board through cloud gateway...");
     try {
-      await new Promise((r) => setTimeout(r, 600));
-      setStatusMsg("Configuration saved successfully!");
+      await updateBoardSettings({ volume, brightness });
+      setConnected(true);
+      setStatusMsg("Volume and brightness updated successfully!");
       setTimeout(() => setStatusMsg(null), 3000);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown save error";
@@ -47,12 +75,13 @@ export default function SettingsPage() {
       <PageHeader
         title="Settings"
         subtitle="System"
+        badge={loading ? "Checking board..." : connected ? "Board connected" : "Board offline"}
         action={
           <div className="flex gap-2">
-            <Button variant="outline" className="gap-2" onClick={() => setBrightness(75)}>
+            <Button variant="outline" className="gap-2" onClick={handleReset}>
               <RotateCcw className="w-4 h-4" /> Reset
             </Button>
-            <Button className="gap-2" onClick={handleSave} disabled={saving}>
+            <Button className="gap-2" onClick={handleSave} disabled={saving || loading || !connected}>
               <Save className="w-4 h-4" /> {saving ? "Saving..." : "Save Changes"}
             </Button>
           </div>
@@ -83,15 +112,46 @@ export default function SettingsPage() {
                 <span className="text-sm font-mono text-cyan-400">{brightness}%</span>
               </div>
               <input
+                id="brightness"
+                aria-label="Brightness"
                 type="range"
                 min={0}
                 max={100}
                 value={brightness}
                 onChange={(e) => setBrightness(Number(e.target.value))}
                 className="w-full h-2 bg-slate-700 rounded-full appearance-none cursor-pointer accent-cyan-500"
+                disabled={!connected}
               />
               <div className="flex justify-between text-[10px] text-slate-600 mt-1">
                 <span>Off</span>
+                <span>25%</span>
+                <span>50%</span>
+                <span>75%</span>
+                <span>100%</span>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-cyan-400" />
+                  <span className="text-sm text-white">Volume</span>
+                </div>
+                <span className="text-sm font-mono text-cyan-400">{volume}%</span>
+              </div>
+              <input
+                id="volume"
+                aria-label="Volume"
+                type="range"
+                min={0}
+                max={100}
+                value={volume}
+                onChange={(event) => setVolume(Number(event.target.value))}
+                className="w-full h-2 bg-slate-700 rounded-full appearance-none cursor-pointer accent-cyan-500"
+                disabled={!connected}
+              />
+              <div className="flex justify-between text-[10px] text-slate-600 mt-1">
+                <span>Mute</span>
                 <span>25%</span>
                 <span>50%</span>
                 <span>75%</span>
@@ -121,59 +181,6 @@ export default function SettingsPage() {
                   <p className="text-slate-500">UI Framework</p>
                   <p className="text-white font-medium">LVGL 8.4</p>
                 </div>
-              </div>
-            </div>
-          </div>
-        </Section>
-
-        {/* ── Network ─────────────────────────────── */}
-        <Section title="Network">
-          <div className="space-y-4">
-            <div>
-              <label className="flex items-center gap-2 text-xs text-slate-400 mb-2">
-                <Wifi className="w-3.5 h-3.5" /> Wi-Fi SSID
-              </label>
-              <input
-                type="text"
-                value={wifiSSID}
-                readOnly
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm text-white focus:border-cyan-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="flex items-center gap-2 text-xs text-slate-400 mb-2">
-                <Radio className="w-3.5 h-3.5" /> MQTT Broker URI
-              </label>
-              <input
-                type="text"
-                value={mqttBroker}
-                readOnly
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm text-white font-mono focus:border-cyan-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="flex items-center gap-2 text-xs text-slate-400 mb-2">
-                <Globe className="w-3.5 h-3.5" /> API Base URL
-              </label>
-              <input
-                type="text"
-                value={apiUrl}
-                readOnly
-                className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm text-white font-mono focus:border-cyan-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="flex items-center gap-2 text-xs text-slate-400 mb-2">
-                <Globe className="w-3.5 h-3.5" /> mDNS Hostname
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={mdns}
-                  onChange={(e) => setMdns(e.target.value)}
-                  className="flex-1 px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm text-white font-mono focus:border-cyan-500 focus:outline-none"
-                />
-                <span className="flex items-center px-3 text-sm text-slate-500">.local</span>
               </div>
             </div>
           </div>

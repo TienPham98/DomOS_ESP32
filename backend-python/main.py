@@ -1,13 +1,18 @@
 """DomOS cloud voice gateway, conversation API and wallpaper proxy."""
 
 from contextlib import asynccontextmanager
+import asyncio
+import hmac
+import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
 
 from config import settings
 from services.openrouter_voice_service import (
@@ -25,6 +30,42 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("domos.main")
+
+
+class DeviceSettingsRequest(BaseModel):
+    device_id: str | None = None
+    volume: int | None = Field(default=None, ge=0, le=100)
+    brightness: int | None = Field(default=None, ge=0, le=100)
+
+
+def _authorize_device_control(authorization: str | None) -> None:
+    expected = settings.VOICE_AUTH_TOKEN
+    if not expected:
+        raise HTTPException(status_code=503, detail="Device control authentication is not configured")
+    supplied = authorization or ""
+    if not hmac.compare_digest(supplied, f"Bearer {expected}"):
+        raise HTTPException(status_code=401, detail="Invalid device control token")
+
+
+def _device_tool_payload(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("isError"):
+        raise HTTPException(status_code=502, detail="The board rejected the command")
+    content = result.get("content")
+    text = content[0].get("text") if isinstance(content, list) and content else None
+    if not isinstance(text, str):
+        return {}
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return {"message": text}
+    return decoded if isinstance(decoded, dict) else {"message": text}
+
+
+async def _active_device(device_id: str | None = None):
+    session = await voice_registry.get(device_id)
+    if session is None:
+        raise HTTPException(status_code=503, detail="Board is not connected to the cloud gateway")
+    return session
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -70,6 +111,55 @@ async def health_check() -> dict:
 @app.websocket("/api/v1/voice/stream")
 async def voice_stream_websocket(websocket: WebSocket) -> None:
     await handle_openrouter_voice(websocket)
+
+
+@app.get("/api/device/status")
+async def device_status(
+    device_id: str | None = None,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _authorize_device_control(authorization)
+    session = await _active_device(device_id)
+    try:
+        result = await session.call_device_tool("device.get_status", {})
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Board status request timed out") from exc
+    payload = _device_tool_payload(result)
+    return {
+        **payload,
+        "id": session.device_id,
+        "mac": session.device_id,
+        "name": "ES3C28P Desk Terminal",
+        "board": "ES3C28P",
+        "online": True,
+        "connection": "cloud",
+    }
+
+
+@app.post("/api/device/settings")
+async def update_device_settings(
+    request: DeviceSettingsRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _authorize_device_control(authorization)
+    if request.volume is None and request.brightness is None:
+        raise HTTPException(status_code=422, detail="Provide volume or brightness")
+    session = await _active_device(request.device_id)
+    applied: dict[str, int] = {}
+    commands = (
+        ("volume", request.volume, "speaker.set_volume", "volume"),
+        ("brightness", request.brightness, "display.set_brightness", "brightness"),
+    )
+    try:
+        for output_key, value, tool_name, argument_name in commands:
+            if value is None:
+                continue
+            result = await session.call_device_tool(tool_name, {argument_name: value})
+            _device_tool_payload(result)
+            applied[output_key] = value
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Board command timed out") from exc
+    return {"ok": True, "device_id": session.device_id, "applied": applied}
 
 
 @app.get("/api/v1/conversations")

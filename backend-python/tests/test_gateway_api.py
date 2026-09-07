@@ -6,7 +6,7 @@ import warnings
 from array import array
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 from starlette.exceptions import StarletteDeprecationWarning
 
@@ -85,6 +85,68 @@ class GatewayApiTests(unittest.TestCase):
         self.assertEqual(payload["memory"], "sqlite")
         self.assertIn("stt_provider", payload)
         self.assertIn("tts_provider", payload)
+
+    def test_device_status_requires_control_token(self):
+        with patch.object(main.settings, "VOICE_AUTH_TOKEN", "control-secret"):
+            with TestClient(main.app) as client:
+                response = client.get("/api/device/status")
+        self.assertEqual(response.status_code, 401)
+
+    def test_device_status_uses_active_voice_session(self):
+        session = VoiceSession(FakeWebSocket(), "board-a", "session-a")
+        session.call_device_tool = AsyncMock(return_value={
+            "content": [{
+                "type": "text",
+                "text": json.dumps({
+                    "firmware": "0.3.5",
+                    "volume": 80,
+                    "brightness": 75,
+                    "free_heap": 120000,
+                }),
+            }],
+            "isError": False,
+        })
+        with (
+            patch.object(main.settings, "VOICE_AUTH_TOKEN", "control-secret"),
+            patch.object(main.voice_registry, "get", AsyncMock(return_value=session)),
+        ):
+            with TestClient(main.app) as client:
+                response = client.get(
+                    "/api/device/status",
+                    headers={"Authorization": "Bearer control-secret"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["online"])
+        self.assertEqual(response.json()["volume"], 80)
+        session.call_device_tool.assert_awaited_once_with("device.get_status", {})
+
+    def test_device_settings_send_exact_volume_and_brightness(self):
+        session = VoiceSession(FakeWebSocket(), "board-a", "session-a")
+        session.call_device_tool = AsyncMock(return_value={
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+        })
+        with (
+            patch.object(main.settings, "VOICE_AUTH_TOKEN", "control-secret"),
+            patch.object(main.voice_registry, "get", AsyncMock(return_value=session)),
+        ):
+            with TestClient(main.app) as client:
+                response = client.post(
+                    "/api/device/settings",
+                    headers={"Authorization": "Bearer control-secret"},
+                    json={"volume": 65, "brightness": 40},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["applied"], {"volume": 65, "brightness": 40})
+        self.assertEqual(
+            session.call_device_tool.await_args_list,
+            [
+                call("speaker.set_volume", {"volume": 65}),
+                call("display.set_brightness", {"brightness": 40}),
+            ],
+        )
 
     def test_conversation_endpoint_filters_by_device(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -248,9 +310,11 @@ class GatewayApiTests(unittest.TestCase):
 class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_registry_add_remove_is_idempotent(self):
         registry = VoiceRegistry()
-        await registry.add("session-1")
-        await registry.add("session-1")
+        session = VoiceSession(FakeWebSocket(), "board-1", "session-1")
+        await registry.add(session)
+        await registry.add(session)
         self.assertEqual(registry.count, 1)
+        self.assertIs(await registry.get("board-1"), session)
         await registry.remove("session-1")
         self.assertEqual(registry.count, 0)
 

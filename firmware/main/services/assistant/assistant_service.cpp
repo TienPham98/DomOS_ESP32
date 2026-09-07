@@ -6,6 +6,8 @@
 
 #include "app/launcher/app_manager.h"
 #include "board/es3c28p/board_es3c28p.h"
+#include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
@@ -608,6 +610,20 @@ void AssistantService::HandleMcp(const char *json)
                 cJSON_AddItemToArray(brightness_required, cJSON_CreateString("delta"));
                 cJSON_AddItemToArray(tools, brightness_tool);
 
+                cJSON *set_brightness_tool = cJSON_CreateObject();
+                cJSON_AddStringToObject(set_brightness_tool, "name", "display.set_brightness");
+                cJSON_AddStringToObject(set_brightness_tool, "description", "Set display brightness from 0 to 100");
+                cJSON *set_brightness_schema = cJSON_AddObjectToObject(set_brightness_tool, "inputSchema");
+                cJSON_AddStringToObject(set_brightness_schema, "type", "object");
+                cJSON *set_brightness_properties = cJSON_AddObjectToObject(set_brightness_schema, "properties");
+                cJSON *brightness_value = cJSON_AddObjectToObject(set_brightness_properties, "brightness");
+                cJSON_AddStringToObject(brightness_value, "type", "integer");
+                cJSON_AddNumberToObject(brightness_value, "minimum", 0);
+                cJSON_AddNumberToObject(brightness_value, "maximum", 100);
+                cJSON *set_brightness_required = cJSON_AddArrayToObject(set_brightness_schema, "required");
+                cJSON_AddItemToArray(set_brightness_required, cJSON_CreateString("brightness"));
+                cJSON_AddItemToArray(tools, set_brightness_tool);
+
                 cJSON *launch_tool = cJSON_CreateObject();
                 cJSON_AddStringToObject(launch_tool, "name", "app.launch");
                 cJSON_AddStringToObject(launch_tool, "description", "Open a DomOS application");
@@ -642,10 +658,15 @@ void AssistantService::HandleMcp(const char *json)
                                         GetState() == AssistantState::Listening ? "listening" :
                                         GetState() == AssistantState::Armed ? "armed" :
                                         GetState() == AssistantState::Processing ? "processing" : "idle";
-                    char status[128];
+                    const esp_app_desc_t *app = esp_app_get_description();
+                    char status[256];
                     snprintf(status, sizeof(status),
-                             "{\"assistant_state\":\"%s\",\"audio_running\":%s}",
-                             state, pipeline_.IsRunning() ? "true" : "false");
+                             "{\"assistant_state\":\"%s\",\"audio_running\":%s,"
+                             "\"firmware\":\"%s\",\"free_heap\":%u,\"storage_used\":40960,"
+                             "\"storage_total\":7340032,\"volume\":%d,\"brightness\":%u}",
+                             state, pipeline_.IsRunning() ? "true" : "false", app->version,
+                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                             board_->GetCodec()->GetVolume(), board_->GetBrightness());
                     SendMcpResult(req_id, status);
                 } else if (strcmp(name, "speaker.set_volume") == 0) {
                     cJSON *volume_j = args ? cJSON_GetObjectItemCaseSensitive(args, "volume") : nullptr;
@@ -683,6 +704,18 @@ void AssistantService::HandleMcp(const char *json)
                         board_->SetBrightness(static_cast<uint8_t>(brightness));
                         char result_text[64];
                         snprintf(result_text, sizeof(result_text), "display brightness set to %d", brightness);
+                        SendMcpResult(req_id, result_text);
+                    }
+                } else if (strcmp(name, "display.set_brightness") == 0) {
+                    cJSON *brightness_j = args ? cJSON_GetObjectItemCaseSensitive(args, "brightness") : nullptr;
+                    if (!cJSON_IsNumber(brightness_j) ||
+                        brightness_j->valueint < 0 || brightness_j->valueint > 100) {
+                        SendMcpResult(req_id, "brightness must be an integer from 0 to 100", true);
+                    } else {
+                        board_->SetBrightness(static_cast<uint8_t>(brightness_j->valueint));
+                        char result_text[64];
+                        snprintf(result_text, sizeof(result_text), "display brightness set to %d",
+                                 brightness_j->valueint);
                         SendMcpResult(req_id, result_text);
                     }
                 } else if (strcmp(name, "app.launch") == 0) {
