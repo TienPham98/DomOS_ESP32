@@ -1195,6 +1195,23 @@ public:
             }
         }
 
+        // The active slot index is kept in RAM and returns to zero after a
+        // reboot, while cached wallpaper files remain in LittleFS. Fall back
+        // to any valid cached slot before declaring the gallery empty.
+        if (!decoded) {
+            for (size_t offset = 1; offset < NUM_WALLPAPER_SLOTS; ++offset) {
+                const size_t cached_slot =
+                    (static_cast<size_t>(s_current_slot_idx) + offset) % NUM_WALLPAPER_SLOTS;
+                if (DecodeJpegFileToBuffer(s_slot_filepaths[cached_slot])) {
+                    s_current_slot_idx = static_cast<int>(cached_slot);
+                    decoded = true;
+                    AddSystemLog("INFO", "wallpaper", "Recovered cached wallpaper from slot %u",
+                                 static_cast<unsigned>(cached_slot));
+                    break;
+                }
+            }
+        }
+
         if (decoded && s_wallpaper_buf != nullptr && img_obj_ != nullptr) {
             lv_img_set_src(img_obj_, &s_wallpaper_dsc);
             lv_obj_clear_flag(img_obj_, LV_OBJ_FLAG_HIDDEN);
