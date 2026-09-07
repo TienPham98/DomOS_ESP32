@@ -16,6 +16,8 @@ struct TouchPoint {
 
 class ES3C28PBoard {
 public:
+    using MenuSwipeHandler = void (*)(void *context);
+
     bool Init();
     bool InitDisplay();
     bool InitTouch();
@@ -27,6 +29,7 @@ public:
     void SetBrightness(uint8_t percent);
     uint8_t GetBrightness() const { return brightness_.load(); }
     bool ReadTouch(TouchPoint *point);
+    void SetMenuSwipeHandler(MenuSwipeHandler handler, void *context);
     esp_lcd_panel_handle_t Panel() const { return panel_; }
 
     // Audio

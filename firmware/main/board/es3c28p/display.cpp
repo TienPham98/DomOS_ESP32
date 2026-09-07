@@ -19,6 +19,9 @@ namespace {
 constexpr char TAG[] = "display";
 constexpr spi_host_device_t LCD_HOST = SPI2_HOST;
 constexpr size_t DRAW_LINES = 20; // 20 lines per buffer (optimal balance of DMA speed and internal SRAM)
+constexpr uint16_t MENU_SWIPE_START_Y = 200;
+constexpr uint16_t MENU_SWIPE_END_Y = 120;
+constexpr uint16_t MENU_SWIPE_MIN_TRAVEL = 80;
 
 lv_disp_drv_t s_display_driver;
 lv_indev_drv_t s_touch_driver;
@@ -26,6 +29,19 @@ lv_color_t *s_draw_buffer_1 = nullptr;
 lv_color_t *s_draw_buffer_2 = nullptr;
 lv_disp_draw_buf_t s_draw_buffer_desc;
 ES3C28PBoard *s_board = nullptr;
+ES3C28PBoard::MenuSwipeHandler s_menu_swipe_handler = nullptr;
+void *s_menu_swipe_context = nullptr;
+
+struct MenuSwipeState {
+    bool active = false;
+    bool eligible = false;
+    uint16_t start_x = 0;
+    uint16_t start_y = 0;
+    uint16_t last_x = 0;
+    uint16_t last_y = 0;
+};
+
+MenuSwipeState s_menu_swipe;
 
 
 bool Check(esp_err_t err, const char *operation)
@@ -54,10 +70,28 @@ void ReadLvglTouch(lv_indev_drv_t *, lv_indev_data_t *data)
 {
     TouchPoint point{};
     if (s_board->ReadTouch(&point) && point.pressed) {
+        if (!s_menu_swipe.active) {
+            s_menu_swipe.active = true;
+            s_menu_swipe.eligible = point.y >= MENU_SWIPE_START_Y;
+            s_menu_swipe.start_x = point.x;
+            s_menu_swipe.start_y = point.y;
+        }
+        s_menu_swipe.last_x = point.x;
+        s_menu_swipe.last_y = point.y;
         data->point.x = point.x;
         data->point.y = point.y;
         data->state = LV_INDEV_STATE_PR;
     } else {
+        if (s_menu_swipe.active && s_menu_swipe.eligible && s_menu_swipe_handler != nullptr) {
+            const int rise = static_cast<int>(s_menu_swipe.start_y) - s_menu_swipe.last_y;
+            const int horizontal = std::abs(static_cast<int>(s_menu_swipe.start_x) - s_menu_swipe.last_x);
+            if (s_menu_swipe.last_y <= MENU_SWIPE_END_Y &&
+                rise >= MENU_SWIPE_MIN_TRAVEL && horizontal <= rise) {
+                ESP_LOGI(TAG, "Bottom swipe detected: rise=%dpx, horizontal=%dpx", rise, horizontal);
+                s_menu_swipe_handler(s_menu_swipe_context);
+            }
+        }
+        s_menu_swipe = {};
         data->state = LV_INDEV_STATE_REL;
     }
 }
@@ -77,6 +111,13 @@ void LvglTask(void *)
 }
 
 } // namespace
+
+void ES3C28PBoard::SetMenuSwipeHandler(MenuSwipeHandler handler, void *context)
+{
+    s_menu_swipe_handler = handler;
+    s_menu_swipe_context = context;
+    s_menu_swipe = {};
+}
 
 bool ES3C28PBoard::InitDisplay()
 {

@@ -2285,6 +2285,11 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
         launch_queue_ = nullptr;
         return false;
     }
+    board_->SetMenuSwipeHandler([](void *context) {
+        auto *manager = static_cast<AppManager *>(context);
+        ESP_LOGI("apps", "Bottom swipe requested launcher");
+        manager->RequestLaunch("launcher");
+    }, this);
     if (mqtt_ != nullptr) {
         mqtt_->SetMessageHandler([this](const char *topic, size_t topic_len,
                                         const char *payload, size_t payload_len) {
