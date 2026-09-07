@@ -38,6 +38,10 @@ const clockStylesList: Array<{ id: ClockAppearance["style"]; name: string; desc:
   { id: "binary", name: "Binary Matrix", desc: "LED matrix bit-column dots" },
 ];
 
+function isClockStyle(value: string): value is ClockAppearance["style"] {
+  return clockStylesList.some((style) => style.id === value);
+}
+
 export default function ThemesPage() {
   const themes = demoThemes.length > 0 ? demoThemes : presetThemes;
   const [activeTheme, setActiveTheme] = useState(themes[0].id);
@@ -208,8 +212,8 @@ export default function ThemesPage() {
                   setActiveTheme(theme.id);
                   setPrimaryColor(theme.primary_color);
                   setSelectedFont(theme.font);
-                  const st = theme.clock_style || selectedClockStyle;
-                  if (theme.clock_style) setSelectedClockStyle(theme.clock_style);
+                  const st = isClockStyle(theme.clock_style) ? theme.clock_style : selectedClockStyle;
+                  setSelectedClockStyle(st);
                   syncToDevice(st, theme.primary_color, mode);
                 }}
               >
