@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from config import settings
 from services.openrouter_voice_service import (
     conversation_store,
+    effective_wake_stt_timeout,
     handle_openrouter_voice,
     primary_llm_model,
     primary_llm_provider,
@@ -159,7 +160,8 @@ async def health_check() -> dict:
         "stt_configured_provider": settings.STT_PROVIDER,
         "wake_stt_provider": primary_wake_stt_provider(),
         "wake_stt_configured_provider": settings.WAKE_STT_PROVIDER,
-        "wake_stt_timeout_sec": settings.WAKE_STT_TIMEOUT_SEC,
+        "wake_stt_timeout_sec": effective_wake_stt_timeout(),
+        "wake_stt_configured_timeout_sec": settings.WAKE_STT_TIMEOUT_SEC,
         "wake_stt_openai_fallback": bool(
             settings.WAKE_STT_OPENAI_FALLBACK and settings.OPENAI_API_KEY
         ),

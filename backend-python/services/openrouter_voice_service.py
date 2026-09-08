@@ -139,6 +139,12 @@ def primary_wake_stt_provider() -> str:
     return "configured" if settings.OPENAI_API_KEY else settings.WAKE_STT_PROVIDER
 
 
+def effective_wake_stt_timeout() -> float:
+    # OpenAI transcription can take longer than the stale 3-second deployment
+    # value under cold-start/network jitter. Eight seconds remains bounded.
+    return max(8.0, settings.WAKE_STT_TIMEOUT_SEC) if settings.OPENAI_API_KEY else settings.WAKE_STT_TIMEOUT_SEC
+
+
 def validate_dom_hello(message: dict[str, Any]) -> None:
     expected = {"codec": "pcm", "sample_rate": 16_000, "channels": 1, "frame_duration": 60}
     audio = message.get("audio_params")
@@ -550,17 +556,24 @@ class VoiceSession:
         await self.send_json({"type": "tts", "state": "stop"})
         await self.set_wake_word(notify_board=True)
 
-    async def transcribe_wake_google(self, pcm: bytes) -> list[tuple[str, str]]:
+    async def transcribe_wake_google(
+        self,
+        pcm: bytes,
+        *,
+        timeout: float | None = None,
+    ) -> list[tuple[str, str]]:
         """Bound both cloud requests; a slow secondary cannot delay activation.
 
         Prefer the configured language for Vietnamese command suffixes. Allow
         it a short grace period if English recognizes the wake phrase first.
         """
+        provider_timeout = timeout or settings.WAKE_STT_TIMEOUT_SEC
+
         async def recognize(language: str) -> tuple[str, str]:
             try:
                 text = await asyncio.wait_for(
-                    self._transcribe_google(pcm, language, timeout=settings.WAKE_STT_TIMEOUT_SEC),
-                    timeout=settings.WAKE_STT_TIMEOUT_SEC,
+                    self._transcribe_google(pcm, language, timeout=provider_timeout),
+                    timeout=provider_timeout,
                 )
                 return language, text
             except Exception as exc:
@@ -644,8 +657,8 @@ class VoiceSession:
                 transcripts = [(
                     settings.STT_LANGUAGE,
                     await self.transcribe(
-                        wake_pcm,
-                        timeout=settings.WAKE_STT_TIMEOUT_SEC,
+                        pcm,
+                        timeout=effective_wake_stt_timeout(),
                     ),
                 )]
 
@@ -819,7 +832,7 @@ class VoiceSession:
         primary = primary_stt_provider()
         openai_cooldown_key = "openai-wake-stt" if timeout is not None else "openai-stt"
         if primary == "openai":
-            providers = ["openai", "google-web"]
+            providers = ["openai", "google-web", "openrouter"]
         elif primary == "google-web":
             providers = ["google-web", "openai"]
         else:
@@ -834,7 +847,12 @@ class VoiceSession:
                 continue
             if provider == "openrouter" and (
                 not settings.OPENROUTER_API_KEY
-                or (primary != "openrouter" and not settings.STT_OPENROUTER_FALLBACK)
+                or not self.provider_ready("openrouter-stt")
+                or (
+                    primary != "openrouter"
+                    and not settings.STT_OPENROUTER_FALLBACK
+                    and self.provider_ready("openai-stt-quota")
+                )
             ):
                 continue
 
@@ -843,20 +861,45 @@ class VoiceSession:
                 if provider == "openai":
                     request = self._transcribe_openai(prepared, selected_language)
                 elif provider == "google-web":
-                    request = self._transcribe_google(
-                        prepared, selected_language, timeout=timeout
-                    )
+                    if timeout is None:
+                        request = self._transcribe_google(prepared, selected_language)
+                    else:
+                        async def recognize_wake_bilingually() -> str:
+                            candidates = await self.transcribe_wake_google(
+                                prepared,
+                                timeout=timeout,
+                            )
+                            _, matched_text, matched, _ = resolve_wake_transcripts(
+                                candidates,
+                                selected_language,
+                            )
+                            if matched:
+                                return matched_text
+                            # A non-wake diagnostic such as "noise" must not
+                            # block the next quota-approved fallback provider.
+                            return ""
+
+                        request = recognize_wake_bilingually()
                 else:
                     request = self._transcribe_openrouter(prepared)
                 transcript = (
                     await asyncio.wait_for(request, timeout=timeout)
-                    if timeout is not None else await request
+                    if timeout is not None and provider != "google-web"
+                    else await request
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 if provider == "openai":
                     self.defer_provider(openai_cooldown_key)
+                    if is_openai_credit_exhausted(exc):
+                        self.defer_provider("openai-stt-quota")
+                        logger.warning(
+                            "OpenAI STT quota exhausted; enabling OpenRouter Audio fallback for %ds",
+                            PROVIDER_RETRY_SECONDS,
+                        )
+                elif provider == "openrouter":
+                    self.defer_provider("openrouter-stt")
                 detail = str(exc) or type(exc).__name__
                 logger.warning(
                     "STT provider failed device=%s provider=%s: %s",

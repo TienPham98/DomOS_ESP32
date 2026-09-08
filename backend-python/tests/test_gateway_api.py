@@ -590,6 +590,28 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         session._transcribe_google.assert_awaited_once()
         session._transcribe_openrouter.assert_not_awaited()
 
+    async def test_openai_stt_quota_enables_openrouter_audio_fallback(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session._transcribe_openai = AsyncMock(side_effect=OpenAIAPIError(
+            "STT", 429, "insufficient_quota", "insufficient_quota",
+            "You have no credits remaining", "req-stt-quota",
+        ))
+        session._transcribe_google = AsyncMock(return_value="")
+        session._transcribe_openrouter = AsyncMock(return_value="Hey Dom")
+        with (
+            patch.object(settings, "STT_PROVIDER", "openai"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+            patch.object(settings, "STT_OPENROUTER_FALLBACK", False),
+        ):
+            transcript = await session.transcribe(bytes(PCM_FRAME_BYTES))
+
+        self.assertEqual(transcript, "Hey Dom")
+        session._transcribe_openai.assert_awaited_once()
+        session._transcribe_google.assert_awaited_once()
+        session._transcribe_openrouter.assert_awaited_once()
+        self.assertFalse(session.provider_ready("openai-stt-quota"))
+
     async def test_wake_stt_timeout_does_not_disable_command_openai_stt(self):
         session = VoiceSession(FakeWebSocket(), "board", "session")
 

@@ -46,9 +46,8 @@ class Settings(BaseSettings):
     WAKE_STT_OPENAI_FALLBACK: bool = True
     WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES: int = Field(default=5, ge=3, le=50)
     WAKE_STT_FALLBACK_MIN_PEAK_RMS: int = Field(default=400, ge=180, le=32_767)
-    # OpenRouter currently requires a minimum account balance for audio input,
-    # including some :free models. Keep this opt-in so free voice recognition
-    # continues through Google Web STT instead of failing with HTTP 402.
+    # Optional for ordinary STT failures. A confirmed OpenAI credit exhaustion
+    # enables OpenRouter Audio automatically after Google, matching LLM routing.
     STT_OPENROUTER_FALLBACK: bool
     TTS_PROVIDER: str
     TTS_VOICE: str

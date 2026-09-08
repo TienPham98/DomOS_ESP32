@@ -112,9 +112,9 @@ Tạo API key miễn phí tại football-data.org rồi chỉ lưu key và URL t
 |---|---|---|
 | `OPENROUTER_API_KEY` | rỗng | Bắt buộc để gọi LLM OpenRouter |
 | `OPENROUTER_MODEL` | `openrouter/free` | Router/model chat và tool calling |
-| `OPENROUTER_AUDIO_MODEL` | Nemotron free | Chỉ dùng nếu đổi STT khỏi `google-web` |
-| `STT_PROVIDER` | `google-web` | `google-web`, `openai` hoặc `openrouter` |
-| `OPENAI_API_KEY` | rỗng | Bắt buộc khi `STT_PROVIDER=openai` |
+| `OPENROUTER_AUDIO_MODEL` | Nemotron free | STT dự phòng sau khi OpenAI xác nhận hết credit |
+| `STT_PROVIDER` | `openai` | `openai`, `google-web` hoặc `openrouter`; có OpenAI key thì luôn ưu tiên OpenAI |
+| `OPENAI_API_KEY` | rỗng | Bắt buộc cho ChatGPT và OpenAI STT |
 | `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | Model nhận dạng âm thanh OpenAI |
 | `STT_LANGUAGE` | `vi-VN` | Ngôn ngữ câu lệnh; wake còn chạy thêm `en-US` |
 | `WAKE_STT_PROVIDER` | `configured` | Dùng OpenAI STT trước cho wake; Google và OpenRouter là các tuyến dự phòng |
@@ -122,6 +122,7 @@ Tạo API key miễn phí tại football-data.org rồi chỉ lưu key và URL t
 | `WAKE_STT_OPENAI_FALLBACK` | `true` | Thử OpenAI STT khi Google chưa nhận ra wake word và bản ghi đủ mạnh |
 | `WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES` | `5` | Số frame giọng nói tối thiểu trước khi gọi fallback, tránh tốn API cho nhiễu ngắn |
 | `WAKE_STT_FALLBACK_MIN_PEAK_RMS` | `400` | Peak RMS tối thiểu trước khi gọi fallback wake STT |
+| `STT_OPENROUTER_FALLBACK` | `false` | Cho phép OpenRouter Audio với lỗi STT thường; khi OpenAI hết credit thì tự bật cho lượt fallback |
 | `TTS_PROVIDER` | `google` | `google` hoặc nhánh Edge TTS |
 | `TTS_VOICE` | `vi-VN-HoaiMyNeural` | Voice dùng bởi Edge TTS |
 | `VOICE_SESSION_TIMEOUT_SEC` | `30` | Thời gian chờ lệnh sau khi wake |
@@ -266,11 +267,12 @@ Mọi câu LLM đi qua bộ chuẩn hóa văn bản thuần trước khi lưu SQ
 và phát TTS. Bộ lọc bỏ heading, `**bold**`, `***`, đường kẻ, bullet, link, code
 fence và HTML; lịch sử cũ được làm sạch idempotent khi gateway khởi động.
 
-OpenAI LLM và OpenAI STT có circuit riêng. Lỗi STT chỉ chuyển sang Google STT,
-không làm ChatGPT bị bỏ qua. LLM chỉ chuyển OpenRouter khi OpenAI trả mã quota
-`insufficient_quota`/hết credit; rate limit tạm thời, timeout, lỗi mạng, xác thực
-hoặc lỗi server được báo lỗi và không âm thầm đổi model. Provider/model thực tế
-sau fallback được cập nhật vào conversation turn thay cho provider ưu tiên.
+OpenAI LLM và OpenAI STT có circuit riêng. Lỗi STT thông thường chỉ chuyển sang
+Google STT và không làm ChatGPT bị bỏ qua. Nếu OpenAI xác nhận hết credit, STT
+thử Google rồi OpenRouter Audio; LLM chuyển sang OpenRouter. Rate limit tạm thời,
+timeout, lỗi mạng, xác thực hoặc lỗi server không bị coi nhầm là hết credit.
+Provider/model thực tế sau fallback được cập nhật vào conversation turn thay cho
+provider ưu tiên.
 
 ## MCP tools
 
