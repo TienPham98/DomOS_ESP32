@@ -87,6 +87,8 @@ class WebSearchService:
         query = plain_speech_text(query).strip()
         if not query:
             raise ValueError("query must not be empty")
+        if not settings.WEB_SEARCH_BASE_URL:
+            raise RuntimeError("WEB_SEARCH_BASE_URL is not configured")
         provider = settings.WEB_SEARCH_PROVIDER.lower()
         if provider == "auto":
             provider = "tavily" if settings.TAVILY_API_KEY else (

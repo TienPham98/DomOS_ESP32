@@ -58,7 +58,6 @@ class GatewayApiTests(unittest.TestCase):
             "OPENAI_STT_MODEL",
             "OPENAI_TIMEOUT_SEC",
             "LLM_PROVIDER_ORDER",
-            "WEB_SEARCH_BASE_URL",
             "STT_PROVIDER",
             "STT_LANGUAGE",
             "STT_OPENROUTER_FALLBACK",
