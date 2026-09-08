@@ -57,6 +57,7 @@ VAD_NOISE_MARGIN = 40
 # Single-word "Hey" / "Dom" can be shorter than the old 300 ms minimum.
 WAKE_MIN_SPEECH_FRAMES = 3
 PROVIDER_RETRY_SECONDS = 300
+NO_SPEECH_RESPONSE = "Mình chưa nghe rõ. Bạn nói lại giúp mình nhé."
 
 SYSTEM_PROMPT = """Bạn là Dom, trợ lý giọng nói tiếng Việt của DomOS trên thiết bị ESP32-S3.
 Luôn hiểu ý định và trả lời bằng tiếng Việt tự nhiên, ngắn gọn, thân thiện, phù hợp để đọc thành tiếng.
@@ -626,7 +627,13 @@ class VoiceSession:
             if settings.WAKE_STT_PROVIDER == "google-web":
                 transcripts = await self.transcribe_wake_google(wake_pcm)
             else:
-                transcripts = [(settings.STT_LANGUAGE, await self.transcribe(wake_pcm))]
+                transcripts = [(
+                    settings.STT_LANGUAGE,
+                    await self.transcribe(
+                        wake_pcm,
+                        timeout=settings.WAKE_STT_TIMEOUT_SEC,
+                    ),
+                )]
 
             language, transcript, matched, command = resolve_wake_transcripts(
                 transcripts, settings.STT_LANGUAGE
@@ -670,6 +677,12 @@ class VoiceSession:
             transcript = await self.transcribe(pcm)
             if not transcript:
                 logger.info("VAD event contained no recognizable speech device=%s", self.device_id)
+                await self.send_json({
+                    "type": "llm",
+                    "emotion": "sad",
+                    "text": NO_SPEECH_RESPONSE,
+                })
+                await self.speak(NO_SPEECH_RESPONSE)
                 return
             await self.process_transcript(transcript)
         except asyncio.CancelledError:
@@ -774,27 +787,81 @@ class VoiceSession:
             return response
         raise RuntimeError("No configured LLM provider is available")
 
-    async def transcribe(self, pcm: bytes, language: str | None = None) -> str:
-        if settings.STT_PROVIDER == "openai":
-            prepared = normalize_speech_pcm(pcm)
-            selected_language = language or settings.STT_LANGUAGE
-            if self.provider_ready("openai-stt"):
-                try:
-                    return await self._transcribe_openai(prepared, selected_language)
-                except Exception as exc:
-                    self.defer_provider("openai-stt")
-                    logger.warning("OpenAI STT failed; falling back to Google STT: %s", exc)
-            return await self._transcribe_google(prepared, selected_language)
-        if settings.STT_PROVIDER == "google-web":
-            prepared = normalize_speech_pcm(pcm)
-            transcript = await self._transcribe_google(
-                prepared, language or settings.STT_LANGUAGE
-            )
-            if transcript or not settings.STT_OPENROUTER_FALLBACK:
+    async def transcribe(
+        self,
+        pcm: bytes,
+        language: str | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> str:
+        """Transcribe with the configured provider first and bounded fallbacks.
+
+        Northflank uses OpenAI as the primary provider. An empty transcript is
+        treated as a miss, not a success, so Google can still recover the turn.
+        OpenRouter Audio remains opt-in unless it is explicitly the primary.
+        """
+        prepared = normalize_speech_pcm(pcm)
+        selected_language = language or settings.STT_LANGUAGE
+        primary = settings.STT_PROVIDER.strip().lower()
+        openai_cooldown_key = "openai-wake-stt" if timeout is not None else "openai-stt"
+        if primary == "openai":
+            providers = ["openai", "google-web"]
+        elif primary == "google-web":
+            providers = ["google-web", "openai"]
+        else:
+            providers = ["openrouter", "openai", "google-web"]
+        if settings.STT_OPENROUTER_FALLBACK and "openrouter" not in providers:
+            providers.append("openrouter")
+
+        for provider in providers:
+            if provider == "openai" and (
+                not settings.OPENAI_API_KEY or not self.provider_ready(openai_cooldown_key)
+            ):
+                continue
+            if provider == "openrouter" and (
+                not settings.OPENROUTER_API_KEY
+                or (primary != "openrouter" and not settings.STT_OPENROUTER_FALLBACK)
+            ):
+                continue
+
+            started = time.monotonic()
+            try:
+                if provider == "openai":
+                    request = self._transcribe_openai(prepared, selected_language)
+                elif provider == "google-web":
+                    request = self._transcribe_google(
+                        prepared, selected_language, timeout=timeout
+                    )
+                else:
+                    request = self._transcribe_openrouter(prepared)
+                transcript = (
+                    await asyncio.wait_for(request, timeout=timeout)
+                    if timeout is not None else await request
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if provider == "openai":
+                    self.defer_provider(openai_cooldown_key)
+                detail = str(exc) or type(exc).__name__
+                logger.warning(
+                    "STT provider failed device=%s provider=%s: %s",
+                    self.device_id, provider, detail,
+                )
+                continue
+
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            if transcript:
+                logger.info(
+                    "STT provider selected device=%s provider=%s latency_ms=%d",
+                    self.device_id, provider, elapsed_ms,
+                )
                 return transcript
-            logger.info("Google STT returned no speech; trying OpenRouter Audio")
-            return await self._transcribe_openrouter(prepared)
-        return await self._transcribe_openrouter(normalize_speech_pcm(pcm))
+            logger.info(
+                "STT provider returned empty device=%s provider=%s latency_ms=%d",
+                self.device_id, provider, elapsed_ms,
+            )
+        return ""
 
     async def _transcribe_google(self, pcm: bytes, language: str, *, timeout: float | None = None) -> str:
         audio = sr.AudioData(pcm, PCM_SAMPLE_RATE, PCM_SAMPLE_WIDTH)
@@ -1133,4 +1200,4 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
             if not future.done():
                 future.cancel()
         await voice_registry.remove(session_id)
-        logger.info("OpenRouter voice disconnected device=%s", device_id)
+        logger.info("Cloud voice disconnected device=%s", device_id)

@@ -2,16 +2,16 @@
 
 Trong tài liệu, thay `<HOST_IP>` và `<DEVICE_IP>` bằng địa chỉ của môi trường triển khai; không commit địa chỉ thật vào README public.
 
-FastAPI gateway kết nối ESP32-S3 với các dịch vụ AI cloud. Service nhận PCM qua WebSocket, phát hiện wake word/VAD, nhận dạng tiếng Việt, gọi OpenRouter, thực thi MCP trên board, tổng hợp giọng nói và lưu lịch sử hội thoại.
+FastAPI gateway kết nối ESP32-S3 với các dịch vụ AI cloud. Service nhận PCM qua WebSocket, phát hiện wake word/VAD, nhận dạng tiếng Việt bằng OpenAI trước, gọi ChatGPT, thực thi MCP trên board, tổng hợp giọng nói và lưu lịch sử hội thoại.
 
 ## Trạng thái triển khai
 
 - HTTP: `http://<HOST_IP>:8000`
 - Voice WebSocket: `ws://<HOST_IP>:8000/api/v1/voice/stream`
-- AI: OpenRouter, mặc định `openrouter/free`
-- LLM chính: OpenAI; OpenRouter chỉ fallback khi OpenAI trả lỗi hết credit/quota
+- AI chính: OpenAI `gpt-4o-mini`
+- LLM dự phòng: OpenRouter chỉ khi OpenAI trả lỗi hết credit/quota
 - Local AI: tắt hoàn toàn
-- STT mặc định: Google Web Speech
+- STT mặc định: OpenAI `gpt-4o-mini-transcribe`; Google Web Speech dự phòng
 - TTS mặc định: Google TTS; có Edge TTS
 - Memory: SQLite `data/conversations.db`
 - Protocol: Dom Voice Protocol v3, PCM 16 kHz, 16-bit, mono, frame 60 ms/1920 byte
@@ -52,7 +52,7 @@ python -m venv .venv
 `config.py` đọc biến từ root `.env` trước và `backend-python/.env` sau. Tạo một trong hai file với key thật, không commit secret:
 
 ```dotenv
-APP_NAME=DomOS OpenRouter Voice Gateway
+APP_NAME=DomOS AI Voice Gateway
 HOST=0.0.0.0
 PORT=8000
 DOMOS_DEBUG=false
@@ -69,8 +69,8 @@ OPENAI_MODEL=gpt-4o-mini
 OPENAI_STT_MODEL=gpt-4o-mini-transcribe
 LLM_PROVIDER_ORDER=openai,openrouter
 STT_LANGUAGE=vi-VN
-WAKE_STT_PROVIDER=google-web
-WAKE_STT_TIMEOUT_SEC=3
+WAKE_STT_PROVIDER=configured
+WAKE_STT_TIMEOUT_SEC=8
 WAKE_STT_OPENAI_FALLBACK=true
 WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES=5
 WAKE_STT_FALLBACK_MIN_PEAK_RMS=400
@@ -117,8 +117,8 @@ Tạo API key miễn phí tại football-data.org rồi chỉ lưu key và URL t
 | `OPENAI_API_KEY` | rỗng | Bắt buộc khi `STT_PROVIDER=openai` |
 | `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | Model nhận dạng âm thanh OpenAI |
 | `STT_LANGUAGE` | `vi-VN` | Ngôn ngữ câu lệnh; wake còn chạy thêm `en-US` |
-| `WAKE_STT_PROVIDER` | `google-web` | Wake STT riêng; `configured` dùng cùng chuỗi provider của STT câu lệnh |
-| `WAKE_STT_TIMEOUT_SEC` | `3` | Timeout mỗi nhánh Google wake STT, không phải cam kết độ trễ tổng |
+| `WAKE_STT_PROVIDER` | `configured` | Dùng OpenAI STT trước cho wake; Google và OpenRouter là các tuyến dự phòng |
+| `WAKE_STT_TIMEOUT_SEC` | `8` | Timeout mỗi provider khi nhận dạng wake word |
 | `WAKE_STT_OPENAI_FALLBACK` | `true` | Thử OpenAI STT khi Google chưa nhận ra wake word và bản ghi đủ mạnh |
 | `WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES` | `5` | Số frame giọng nói tối thiểu trước khi gọi fallback, tránh tốn API cho nhiễu ngắn |
 | `WAKE_STT_FALLBACK_MIN_PEAK_RMS` | `400` | Peak RMS tối thiểu trước khi gọi fallback wake STT |
@@ -235,13 +235,13 @@ Không chấp nhận transcript rỗng làm wake. Khi test lặp, sau một wake
 
 ```text
 PCM -> VAD end -> listen.processing -> STT vi-VN
-    -> direct deterministic command hoặc OpenRouter chat/tool call
+    -> direct deterministic command hoặc OpenAI chat/tool call
     -> llm text/emotion
     -> TTS sentence_start + binary PCM
     -> tts.stop -> WAKE_WORD
 ```
 
-Lệnh volume/brightness/app có parser trực tiếp để vẫn ổn định khi model free được OpenRouter chọn có tool calling yếu. Yêu cầu khác đi qua OpenRouter.
+Lệnh volume/brightness/app có parser trực tiếp để vẫn ổn định và phản hồi nhanh. Yêu cầu khác đi qua OpenAI; OpenRouter chỉ nhận lượt hội thoại sau khi OpenAI xác nhận hết credit/quota.
 
 Lệnh mở Codex Credit: “mở ứng dụng Codex Credit”, “mở Codex”, “Codex usage”
 hoặc “code credit checking”. Parser hỗ trợ câu không dấu và bản nhận dạng nhầm
@@ -280,10 +280,11 @@ với `source=wake_word`; nếu câu gọi kèm lệnh thì dùng `listen.proces
 với cùng source. Firmware đưa Assistant lên trước qua EventBus và hàng đợi UI.
 Các trạng thái TTS thông thường không giành lại màn hình từ app vừa được mở.
 
-Wake STT mặc định chạy Google tiếng Việt/Anh song song, ưu tiên bản tiếng Việt.
-Nếu nhánh tiếng Anh nhận trước, chỉ chờ tiếng Việt thêm tối đa 150 ms; mỗi nhánh
-có timeout riêng. Lệnh hội thoại vẫn dùng `STT_PROVIDER` như cấu hình cũ.
-Log `stt_ms` đo phần kiểm tra wake, không bao gồm thời gian chờ kết thúc câu VAD.
+Wake STT mặc định dùng cùng chuỗi provider với câu lệnh: OpenAI trước, Google
+Web Speech dự phòng khi OpenAI lỗi, timeout hoặc trả transcript rỗng. Circuit
+breaker wake và câu lệnh tách biệt để timeout của wake không làm mất OpenAI ở
+câu lệnh ngay sau đó. Log `stt_ms` đo phần kiểm tra wake, không bao gồm thời gian
+chờ kết thúc câu VAD.
 
 Không còn xem “Hello”, “huy động”, “he does” là wake word vì dễ kích hoạt nhầm
 khi nghe nền. “Hey” và “Dom” vẫn có nguy cơ kích hoạt nhầm trong hội thoại.
@@ -324,7 +325,7 @@ Gateway chỉ xác nhận thành công sau khi firmware trả MCP result.
 - trạng thái và timestamp;
 - tool name, arguments, result, duration và success/error.
 
-Context gần nhất được đưa vào lần gọi OpenRouter tiếp theo. Dashboard đọc cùng dữ liệu qua `/api/v1/conversations`.
+Context gần nhất được đưa vào lần gọi LLM tiếp theo. Dashboard đọc cùng dữ liệu qua `/api/v1/conversations`.
 
 ## Test và debug
 
@@ -335,11 +336,12 @@ Context gần nhất được đưa vào lần gọi OpenRouter tiếp theo. Das
 
 Log cần quan sát:
 
-- `OpenRouter voice connected`: handshake thành công.
+- `Cloud voice connected`: handshake thành công.
 - `Wake audio`: số frame, speech frame, peak/average RMS.
 - `Wake phrase accepted/rejected`: transcript song ngữ.
 - `Command speech ended`: VAD đã tự chốt câu.
 - `STT device=...`: transcript lệnh.
-- HTTP `200 OK` từ OpenRouter.
+- `STT provider selected ... provider=openai`: OpenAI đã nhận dạng thành công.
+- HTTP `200 OK` từ OpenAI; OpenRouter chỉ xuất hiện khi OpenAI hết credit/quota.
 
 Nếu board online nhưng `active_sessions=0`, mở app Assistant hoặc `POST http://<DEVICE_IP>/api/launch` với `{"app":"assistant"}`.

@@ -17,7 +17,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    APP_NAME: str = "DomOS OpenRouter Voice Gateway"
+    APP_NAME: str = "DomOS AI Voice Gateway"
     HOST: str
     PORT: int
     # Namespaced to avoid collisions with generic DEBUG variables injected by
@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     STT_PROVIDER: str
     STT_LANGUAGE: str
     # Wake checks need not wait for the command STT provider's quota/fallbacks.
-    WAKE_STT_PROVIDER: Literal["google-web", "configured"] = "google-web"
-    WAKE_STT_TIMEOUT_SEC: float = Field(default=3.0, gt=0, le=15)
+    WAKE_STT_PROVIDER: Literal["google-web", "configured"] = "configured"
+    WAKE_STT_TIMEOUT_SEC: float = Field(default=8.0, gt=0, le=15)
     # A strong wake capture that Google cannot resolve is retried with the
     # configured OpenAI transcription model before optional OpenRouter Audio.
     WAKE_STT_OPENAI_FALLBACK: bool = True

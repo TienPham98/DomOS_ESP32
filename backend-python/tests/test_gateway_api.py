@@ -22,6 +22,7 @@ from services.conversation_store import ConversationStore
 from services.codex_usage_service import CodexUsageService
 from services.football_service import FootballService
 from services.openrouter_voice_service import (
+    NO_SPEECH_RESPONSE,
     OpenAIAPIError,
     PCM_FRAME_BYTES,
     VoiceRegistry,
@@ -537,6 +538,81 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         session._transcribe_openrouter.assert_not_awaited()
         session._openai.assert_awaited_once()
         session._openrouter.assert_not_awaited()
+
+    async def test_openai_stt_is_preferred_when_it_recognizes_speech(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session._transcribe_openai = AsyncMock(return_value="tăng âm lượng")
+        session._transcribe_google = AsyncMock()
+        session._transcribe_openrouter = AsyncMock()
+        with (
+            patch.object(settings, "STT_PROVIDER", "openai"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+            patch.object(settings, "STT_OPENROUTER_FALLBACK", False),
+        ):
+            transcript = await session.transcribe(bytes(PCM_FRAME_BYTES))
+
+        self.assertEqual(transcript, "tăng âm lượng")
+        session._transcribe_openai.assert_awaited_once()
+        session._transcribe_google.assert_not_awaited()
+        session._transcribe_openrouter.assert_not_awaited()
+
+    async def test_empty_openai_transcript_falls_back_to_google(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session._transcribe_openai = AsyncMock(return_value="")
+        session._transcribe_google = AsyncMock(return_value="mở đồng hồ")
+        session._transcribe_openrouter = AsyncMock()
+        with (
+            patch.object(settings, "STT_PROVIDER", "openai"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-test"),
+            patch.object(settings, "STT_OPENROUTER_FALLBACK", False),
+        ):
+            transcript = await session.transcribe(bytes(PCM_FRAME_BYTES))
+
+        self.assertEqual(transcript, "mở đồng hồ")
+        session._transcribe_openai.assert_awaited_once()
+        session._transcribe_google.assert_awaited_once()
+        session._transcribe_openrouter.assert_not_awaited()
+
+    async def test_wake_stt_timeout_does_not_disable_command_openai_stt(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+
+        async def never_finishes(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        session._transcribe_openai = AsyncMock(side_effect=never_finishes)
+        session._transcribe_google = AsyncMock(return_value="Hey Dom")
+        with (
+            patch.object(settings, "STT_PROVIDER", "openai"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "STT_OPENROUTER_FALLBACK", False),
+        ):
+            transcript = await session.transcribe(bytes(PCM_FRAME_BYTES), timeout=0.01)
+
+        self.assertEqual(transcript, "Hey Dom")
+        self.assertFalse(session.provider_ready("openai-wake-stt"))
+        self.assertTrue(session.provider_ready("openai-stt"))
+
+    async def test_unrecognized_command_is_spoken_and_returns_to_wake_mode(self):
+        websocket = FakeWebSocket()
+        session = VoiceSession(websocket, "board", "session")
+        session.state = "PROCESSING"
+        session.transcribe = AsyncMock(return_value="")
+        session.speak = AsyncMock()
+
+        await session.run_pipeline(bytes(PCM_FRAME_BYTES))
+
+        session.speak.assert_awaited_once_with(NO_SPEECH_RESPONSE)
+        self.assertTrue(
+            any(
+                message.get("type") == "llm"
+                and message.get("emotion") == "sad"
+                and message.get("text") == NO_SPEECH_RESPONSE
+                for message in websocket.text_messages
+            )
+        )
+        self.assertEqual(session.state, "WAKE_WORD")
 
 
 if __name__ == "__main__":

@@ -155,6 +155,7 @@ async def health_check() -> dict:
         "audio_model": settings.OPENROUTER_AUDIO_MODEL,
         "stt_provider": settings.STT_PROVIDER,
         "wake_stt_provider": settings.WAKE_STT_PROVIDER,
+        "wake_stt_timeout_sec": settings.WAKE_STT_TIMEOUT_SEC,
         "wake_stt_openai_fallback": bool(
             settings.WAKE_STT_OPENAI_FALLBACK and settings.OPENAI_API_KEY
         ),
