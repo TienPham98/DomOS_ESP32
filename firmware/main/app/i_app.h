@@ -8,4 +8,5 @@ public:
     virtual void Destroy() = 0;
     virtual void Show() = 0;
     virtual void Hide() = 0;
+    virtual void OnUserInteraction() {}
 };

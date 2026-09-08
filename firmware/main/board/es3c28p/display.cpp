@@ -31,6 +31,8 @@ lv_disp_draw_buf_t s_draw_buffer_desc;
 ES3C28PBoard *s_board = nullptr;
 ES3C28PBoard::MenuSwipeHandler s_menu_swipe_handler = nullptr;
 void *s_menu_swipe_context = nullptr;
+ES3C28PBoard::TouchActivityHandler s_touch_activity_handler = nullptr;
+void *s_touch_activity_context = nullptr;
 
 struct MenuSwipeState {
     bool active = false;
@@ -71,6 +73,9 @@ void ReadLvglTouch(lv_indev_drv_t *, lv_indev_data_t *data)
     TouchPoint point{};
     if (s_board->ReadTouch(&point) && point.pressed) {
         if (!s_menu_swipe.active) {
+            if (s_touch_activity_handler != nullptr) {
+                s_touch_activity_handler(s_touch_activity_context);
+            }
             s_menu_swipe.active = true;
             s_menu_swipe.eligible = point.y >= MENU_SWIPE_START_Y;
             s_menu_swipe.start_x = point.x;
@@ -117,6 +122,12 @@ void ES3C28PBoard::SetMenuSwipeHandler(MenuSwipeHandler handler, void *context)
     s_menu_swipe_handler = handler;
     s_menu_swipe_context = context;
     s_menu_swipe = {};
+}
+
+void ES3C28PBoard::SetTouchActivityHandler(TouchActivityHandler handler, void *context)
+{
+    s_touch_activity_handler = handler;
+    s_touch_activity_context = context;
 }
 
 bool ES3C28PBoard::InitDisplay()

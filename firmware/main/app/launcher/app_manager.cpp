@@ -222,13 +222,52 @@ public:
     explicit ScreenApp(AppManager &manager) : manager_(manager) {}
     void Destroy() override
     {
+        if (controls_timer_ != nullptr) {
+            lv_timer_del(controls_timer_);
+            controls_timer_ = nullptr;
+        }
         if (screen_ != nullptr) lv_obj_del(screen_);
         screen_ = nullptr;
     }
-    void Show() override { lv_scr_load(screen_); }
+    void Show() override
+    {
+        lv_scr_load(screen_);
+        ShowAutoHideControls();
+    }
     void Hide() override {}
+    void OnUserInteraction() override { ShowAutoHideControls(); }
 
 protected:
+    static constexpr uint32_t kControlsVisibleMs = 2000;
+
+    void AddAutoHideControl(lv_obj_t *control)
+    {
+        if (control == nullptr || control_count_ >= kMaxAutoHideControls) return;
+        controls_[control_count_++] = control;
+        if (controls_timer_ == nullptr) {
+            controls_timer_ = lv_timer_create([](lv_timer_t *timer) {
+                auto *app = static_cast<ScreenApp *>(timer->user_data);
+                for (size_t i = 0; i < app->control_count_; ++i) {
+                    if (app->controls_[i] != nullptr) {
+                        lv_obj_add_flag(app->controls_[i], LV_OBJ_FLAG_HIDDEN);
+                    }
+                }
+                lv_timer_pause(timer);
+            }, kControlsVisibleMs, this);
+        }
+    }
+
+    void ShowAutoHideControls()
+    {
+        if (controls_timer_ == nullptr) return;
+        for (size_t i = 0; i < control_count_; ++i) {
+            if (controls_[i] != nullptr) lv_obj_clear_flag(controls_[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_timer_set_period(controls_timer_, kControlsVisibleMs);
+        lv_timer_reset(controls_timer_);
+        lv_timer_resume(controls_timer_);
+    }
+
     void AddBackButton()
     {
         lv_obj_t *top_btn = lv_btn_create(screen_);
@@ -247,9 +286,16 @@ protected:
         lv_label_set_text(lbl, LV_SYMBOL_LEFT);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
         lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 0);
+        AddAutoHideControl(top_btn);
     }
     AppManager &manager_;
     lv_obj_t *screen_ = nullptr;
+
+private:
+    static constexpr size_t kMaxAutoHideControls = 4;
+    lv_obj_t *controls_[kMaxAutoHideControls]{};
+    size_t control_count_ = 0;
+    lv_timer_t *controls_timer_ = nullptr;
 };
 
 class LauncherApp final : public ScreenApp {
@@ -1052,7 +1098,7 @@ public:
         lv_obj_set_style_text_color(n_lbl, lv_color_hex(0x38bdf8), 0);
         lv_obj_align(n_lbl, LV_ALIGN_CENTER, 0, 0);
 
-        // 6. Screen click unhides navigation controls & sets 3-second auto-hide timer
+        // 6. Any screen interaction reveals navigation controls for two seconds.
         lv_obj_add_event_cb(screen_, [](lv_event_t *e) {
             auto *wp_app = static_cast<WallpaperApp *>(lv_event_get_user_data(e));
             if (wp_app != nullptr && wp_app->back_btn_ != nullptr) {
@@ -1060,11 +1106,7 @@ public:
                 if (target == wp_app->back_btn_ || target == wp_app->slideshow_btn_ || target == wp_app->prev_btn_ || target == wp_app->next_btn_) {
                     return;
                 }
-                lv_obj_clear_flag(wp_app->back_btn_, LV_OBJ_FLAG_HIDDEN);
-                if (wp_app->slideshow_btn_) lv_obj_clear_flag(wp_app->slideshow_btn_, LV_OBJ_FLAG_HIDDEN);
-                if (wp_app->prev_btn_) lv_obj_clear_flag(wp_app->prev_btn_, LV_OBJ_FLAG_HIDDEN);
-                if (wp_app->next_btn_) lv_obj_clear_flag(wp_app->next_btn_, LV_OBJ_FLAG_HIDDEN);
-                wp_app->ResetAutoHideTimer();
+                wp_app->OnUserInteraction();
             }
         }, LV_EVENT_CLICKED, this);
 
@@ -1090,10 +1132,7 @@ public:
     void Show() override
     {
         ScreenApp::Show();
-        if (back_btn_ != nullptr) lv_obj_add_flag(back_btn_, LV_OBJ_FLAG_HIDDEN);
-        if (slideshow_btn_ != nullptr) lv_obj_add_flag(slideshow_btn_, LV_OBJ_FLAG_HIDDEN);
-        if (prev_btn_ != nullptr) lv_obj_add_flag(prev_btn_, LV_OBJ_FLAG_HIDDEN);
-        if (next_btn_ != nullptr) lv_obj_add_flag(next_btn_, LV_OBJ_FLAG_HIDDEN);
+        OnUserInteraction();
 
         // Sync button icon with active slideshow status
         if (slideshow_lbl_ != nullptr) {
@@ -1106,6 +1145,15 @@ public:
             }
         }
         RenderActiveSlot();
+    }
+
+    void OnUserInteraction() override
+    {
+        if (back_btn_ != nullptr) lv_obj_clear_flag(back_btn_, LV_OBJ_FLAG_HIDDEN);
+        if (slideshow_btn_ != nullptr) lv_obj_clear_flag(slideshow_btn_, LV_OBJ_FLAG_HIDDEN);
+        if (prev_btn_ != nullptr) lv_obj_clear_flag(prev_btn_, LV_OBJ_FLAG_HIDDEN);
+        if (next_btn_ != nullptr) lv_obj_clear_flag(next_btn_, LV_OBJ_FLAG_HIDDEN);
+        ResetAutoHideTimer();
     }
 
     void Hide() override
@@ -1177,7 +1225,7 @@ public:
                     if (wp_app->next_btn_) lv_obj_add_flag(wp_app->next_btn_, LV_OBJ_FLAG_HIDDEN);
                     if (wp_app->auto_hide_timer_) lv_timer_pause(wp_app->auto_hide_timer_);
                 }
-            }, 3000, this);
+            }, kControlsVisibleMs, this);
         }
     }
 
@@ -1290,6 +1338,7 @@ public:
         Label(refresh, LV_SYMBOL_REFRESH, LV_ALIGN_CENTER, 0, 0, &lv_font_montserrat_14);
 
         AddBackButton();
+        AddAutoHideControl(refresh);
         RenderCache();
         refresh_timer_ = lv_timer_create([](lv_timer_t *timer) {
             auto *app = static_cast<ManchesterUnitedApp *>(timer->user_data);
@@ -1514,6 +1563,7 @@ public:
         Label(refresh, LV_SYMBOL_REFRESH, LV_ALIGN_CENTER, 0, 0, &lv_font_montserrat_14);
 
         AddBackButton();
+        AddAutoHideControl(refresh);
         RenderCache();
         refresh_timer_ = lv_timer_create([](lv_timer_t *timer) {
             auto *app = static_cast<CodexCreditApp *>(timer->user_data);
@@ -1783,6 +1833,12 @@ public:
         if (rotate_timer_ != nullptr) lv_timer_pause(rotate_timer_);
     }
 
+    void OnUserInteraction() override
+    {
+        if (active_view_ == View::ManchesterUnited) man_utd_.OnUserInteraction();
+        else codex_credit_.OnUserInteraction();
+    }
+
     void SelectInitialView(const std::string &requested_app)
     {
         if (requested_app == "man-utd") active_view_ = View::ManchesterUnited;
@@ -1928,6 +1984,7 @@ public:
         lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
         lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_16, 0);
         lv_obj_align(back_lbl, LV_ALIGN_CENTER, 0, 0);
+        AddAutoHideControl(back_btn);
 
         ta_ssid_ = lv_textarea_create(screen_);
         lv_obj_set_size(ta_ssid_, 145, 32);
@@ -2412,6 +2469,10 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
         auto *manager = static_cast<AppManager *>(context);
         ESP_LOGI("apps", "Bottom swipe requested launcher");
         manager->RequestLaunch("launcher");
+    }, this);
+    board_->SetTouchActivityHandler([](void *context) {
+        auto *manager = static_cast<AppManager *>(context);
+        if (manager->current_ != nullptr) manager->current_->OnUserInteraction();
     }, this);
     if (mqtt_ != nullptr) {
         mqtt_->SetMessageHandler([this](const char *topic, size_t topic_len,
