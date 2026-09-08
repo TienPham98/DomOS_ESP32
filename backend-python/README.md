@@ -71,6 +71,9 @@ LLM_PROVIDER_ORDER=openai,openrouter
 STT_LANGUAGE=vi-VN
 WAKE_STT_PROVIDER=google-web
 WAKE_STT_TIMEOUT_SEC=3
+WAKE_STT_OPENAI_FALLBACK=true
+WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES=5
+WAKE_STT_FALLBACK_MIN_PEAK_RMS=400
 TTS_PROVIDER=google
 TTS_VOICE=vi-VN-HoaiMyNeural
 TTS_TIMEOUT_SEC=15
@@ -116,6 +119,9 @@ Tạo API key miễn phí tại football-data.org rồi chỉ lưu key và URL t
 | `STT_LANGUAGE` | `vi-VN` | Ngôn ngữ câu lệnh; wake còn chạy thêm `en-US` |
 | `WAKE_STT_PROVIDER` | `google-web` | Wake STT riêng; `configured` dùng cùng chuỗi provider của STT câu lệnh |
 | `WAKE_STT_TIMEOUT_SEC` | `3` | Timeout mỗi nhánh Google wake STT, không phải cam kết độ trễ tổng |
+| `WAKE_STT_OPENAI_FALLBACK` | `true` | Thử OpenAI STT khi Google chưa nhận ra wake word và bản ghi đủ mạnh |
+| `WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES` | `5` | Số frame giọng nói tối thiểu trước khi gọi fallback, tránh tốn API cho nhiễu ngắn |
+| `WAKE_STT_FALLBACK_MIN_PEAK_RMS` | `400` | Peak RMS tối thiểu trước khi gọi fallback wake STT |
 | `TTS_PROVIDER` | `google` | `google` hoặc nhánh Edge TTS |
 | `TTS_VOICE` | `vi-VN-HoaiMyNeural` | Voice dùng bởi Edge TTS |
 | `VOICE_SESSION_TIMEOUT_SEC` | `30` | Thời gian chờ lệnh sau khi wake |

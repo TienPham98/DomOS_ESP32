@@ -301,6 +301,30 @@ def split_wake_word(text: str) -> tuple[bool, str]:
     return True, remainder
 
 
+def resolve_wake_transcripts(
+    transcripts: list[tuple[str, str]], preferred_language: str,
+) -> tuple[str, str, bool, str]:
+    """Select a wake match while preserving the best diagnostic transcript."""
+    for language, transcript in transcripts:
+        matched, command = split_wake_word(transcript)
+        if matched:
+            return language, transcript, True, command
+
+    by_language = dict(transcripts)
+    if matches_device_wake_signature(
+        by_language.get("en-US", ""), by_language.get(preferred_language, "")
+    ):
+        diagnostic = " / ".join(text for _, text in transcripts if text)
+        return "bilingual-signature", diagnostic, True, ""
+
+    diagnostic = next(((language, text) for language, text in transcripts if text), None)
+    if diagnostic is not None:
+        return diagnostic[0], diagnostic[1], False, ""
+    if transcripts:
+        return transcripts[0][0], "", False, ""
+    return "", "", False, ""
+
+
 class VoiceSession:
     def __init__(self, websocket: WebSocket, device_id: str, session_id: str) -> None:
         self.websocket = websocket
@@ -548,37 +572,74 @@ class VoiceSession:
             await asyncio.gather(*pending, return_exceptions=True)
         return sorted(transcripts, key=lambda item: item[0] != settings.STT_LANGUAGE)
 
+    def should_use_wake_fallback(self) -> bool:
+        """Avoid sending short background noises to paid cloud STT providers."""
+        return (
+            self.speech_frames >= settings.WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES
+            and self.max_energy >= settings.WAKE_STT_FALLBACK_MIN_PEAK_RMS
+        )
+
+    async def transcribe_wake_fallback(self, pcm: bytes) -> list[tuple[str, str]]:
+        """Try independent cloud STT providers without failing the wake loop."""
+        transcripts: list[tuple[str, str]] = []
+
+        if (
+            settings.WAKE_STT_OPENAI_FALLBACK
+            and settings.OPENAI_API_KEY
+            and self.provider_ready("openai-wake-stt")
+        ):
+            try:
+                logger.info("Wake STT fallback device=%s provider=openai", self.device_id)
+                transcript = await asyncio.wait_for(
+                    self._transcribe_openai(pcm, settings.STT_LANGUAGE),
+                    timeout=settings.WAKE_STT_TIMEOUT_SEC,
+                )
+                transcripts.append(("openai", transcript))
+                if split_wake_word(transcript)[0]:
+                    return transcripts
+            except Exception as exc:
+                self.defer_provider("openai-wake-stt")
+                logger.warning(
+                    "Wake STT fallback unavailable device=%s provider=openai: %s",
+                    self.device_id, exc,
+                )
+
+        if settings.STT_OPENROUTER_FALLBACK and settings.OPENROUTER_API_KEY:
+            try:
+                logger.info("Wake STT fallback device=%s provider=openrouter", self.device_id)
+                transcript = await asyncio.wait_for(
+                    self._transcribe_openrouter(pcm),
+                    timeout=settings.WAKE_STT_TIMEOUT_SEC,
+                )
+                transcripts.append(("openrouter-audio", transcript))
+            except Exception as exc:
+                logger.warning(
+                    "Wake STT fallback unavailable device=%s provider=openrouter: %s",
+                    self.device_id, exc,
+                )
+        return transcripts
+
     async def run_wake_check(self, pcm: bytes) -> None:
         started = time.monotonic()
         try:
             wake_pcm = normalize_wake_pcm(pcm)
             if settings.WAKE_STT_PROVIDER == "google-web":
                 transcripts = await self.transcribe_wake_google(wake_pcm)
-                if not any(text for _, text in transcripts) and settings.STT_OPENROUTER_FALLBACK:
-                    fallback = await self._transcribe_openrouter(wake_pcm)
-                    transcripts.append(("openrouter-audio", fallback))
             else:
                 transcripts = [(settings.STT_LANGUAGE, await self.transcribe(wake_pcm))]
 
-            language, transcript, matched, command = "", "", False, ""
-            for candidate_language, candidate_text in transcripts:
-                candidate_matched, candidate_command = split_wake_word(candidate_text)
-                if candidate_matched:
-                    language = candidate_language
-                    transcript = candidate_text
-                    matched = True
-                    command = candidate_command
-                    break
-            by_language = dict(transcripts)
-            if not matched and matches_device_wake_signature(
-                by_language.get("en-US", ""), by_language.get(settings.STT_LANGUAGE, "")
+            language, transcript, matched, command = resolve_wake_transcripts(
+                transcripts, settings.STT_LANGUAGE
+            )
+            if (
+                not matched
+                and settings.WAKE_STT_PROVIDER == "google-web"
+                and self.should_use_wake_fallback()
             ):
-                language = "bilingual-signature"
-                transcript = f"{transcripts[0][1]} / {transcripts[1][1]}"
-                matched = True
-                command = ""
-            if not transcript:
-                language, transcript = transcripts[0]
+                transcripts.extend(await self.transcribe_wake_fallback(wake_pcm))
+                language, transcript, matched, command = resolve_wake_transcripts(
+                    transcripts, settings.STT_LANGUAGE
+                )
             if not matched:
                 logger.info(
                     "Wake phrase rejected device=%s transcripts=%r",

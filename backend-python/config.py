@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # Wake checks need not wait for the command STT provider's quota/fallbacks.
     WAKE_STT_PROVIDER: Literal["google-web", "configured"] = "google-web"
     WAKE_STT_TIMEOUT_SEC: float = Field(default=3.0, gt=0, le=15)
+    # A strong wake capture that Google cannot resolve is retried with the
+    # configured OpenAI transcription model before optional OpenRouter Audio.
+    WAKE_STT_OPENAI_FALLBACK: bool = True
+    WAKE_STT_FALLBACK_MIN_SPEECH_FRAMES: int = Field(default=5, ge=3, le=50)
+    WAKE_STT_FALLBACK_MIN_PEAK_RMS: int = Field(default=400, ge=180, le=32_767)
     # OpenRouter currently requires a minimum account balance for audio input,
     # including some :free models. Keep this opt-in so free voice recognition
     # continues through Google Web STT instead of failing with HTTP 402.

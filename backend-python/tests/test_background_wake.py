@@ -157,6 +157,64 @@ class BackgroundWakeTests(unittest.IsolatedAsyncioTestCase):
             await self.session.run_wake_check(bytes(PCM_FRAME_BYTES))
         self.session.transcribe.assert_not_awaited()
 
+    async def test_google_miss_uses_openai_wake_fallback(self):
+        self.session.transcribe_wake_google = AsyncMock(return_value=[
+            ("vi-VN", ""), ("en-US", ""),
+        ])
+        self.session._transcribe_openai = AsyncMock(return_value="Hey Dom")
+        self.session._transcribe_openrouter = AsyncMock()
+        self.session.speech_frames = 8
+        self.session.max_energy = 1200
+
+        with (
+            patch.object(settings, "OPENAI_API_KEY", "test-openai-key"),
+            patch.object(settings, "WAKE_STT_OPENAI_FALLBACK", True),
+            patch.object(settings, "STT_OPENROUTER_FALLBACK", False),
+        ):
+            await self.session.run_wake_check(bytes(PCM_FRAME_BYTES))
+
+        self.session._transcribe_openai.assert_awaited_once()
+        self.session._transcribe_openrouter.assert_not_awaited()
+        self.assertEqual(self.session.state, "LISTENING")
+
+    async def test_openai_failure_can_fall_back_to_openrouter_audio(self):
+        self.session.transcribe_wake_google = AsyncMock(return_value=[
+            ("vi-VN", "noise"), ("en-US", "noise"),
+        ])
+        self.session._transcribe_openai = AsyncMock(side_effect=RuntimeError("unavailable"))
+        self.session._transcribe_openrouter = AsyncMock(return_value="Dom")
+        self.session.speech_frames = 7
+        self.session.max_energy = 900
+
+        with (
+            patch.object(settings, "OPENAI_API_KEY", "test-openai-key"),
+            patch.object(settings, "OPENROUTER_API_KEY", "test-openrouter-key"),
+            patch.object(settings, "WAKE_STT_OPENAI_FALLBACK", True),
+            patch.object(settings, "STT_OPENROUTER_FALLBACK", True),
+        ):
+            await self.session.run_wake_check(bytes(PCM_FRAME_BYTES))
+
+        self.session._transcribe_openai.assert_awaited_once()
+        self.session._transcribe_openrouter.assert_awaited_once()
+        self.assertEqual(self.session.state, "LISTENING")
+
+    async def test_short_noise_does_not_spend_fallback_quota(self):
+        self.session.transcribe_wake_google = AsyncMock(return_value=[
+            ("vi-VN", ""), ("en-US", ""),
+        ])
+        self.session._transcribe_openai = AsyncMock(return_value="Hey Dom")
+        self.session.speech_frames = 3
+        self.session.max_energy = 1000
+
+        with (
+            patch.object(settings, "OPENAI_API_KEY", "test-openai-key"),
+            patch.object(settings, "WAKE_STT_OPENAI_FALLBACK", True),
+        ):
+            await self.session.run_wake_check(bytes(PCM_FRAME_BYTES))
+
+        self.session._transcribe_openai.assert_not_awaited()
+        self.assertEqual(self.session.state, "WAKE_WORD")
+
     async def test_configured_wake_provider_remains_selectable(self):
         self.session.transcribe = AsyncMock(return_value="Hey Dom")
         self.session.transcribe_wake_google = AsyncMock()

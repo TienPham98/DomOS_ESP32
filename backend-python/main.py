@@ -154,6 +154,13 @@ async def health_check() -> dict:
         "model": primary_llm_model(),
         "audio_model": settings.OPENROUTER_AUDIO_MODEL,
         "stt_provider": settings.STT_PROVIDER,
+        "wake_stt_provider": settings.WAKE_STT_PROVIDER,
+        "wake_stt_openai_fallback": bool(
+            settings.WAKE_STT_OPENAI_FALLBACK and settings.OPENAI_API_KEY
+        ),
+        "wake_stt_openrouter_fallback": bool(
+            settings.STT_OPENROUTER_FALLBACK and settings.OPENROUTER_API_KEY
+        ),
         "tts_provider": settings.TTS_PROVIDER,
         "api_key_configured": primary_llm_provider() != "unconfigured",
         "openai_key_configured": bool(settings.OPENAI_API_KEY),
