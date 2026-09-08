@@ -74,7 +74,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "speaker.adjust_volume", "description": "Tăng hoặc giảm âm lượng loa theo delta", "parameters": {"type": "object", "properties": {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}, "required": ["delta"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "display.adjust_brightness", "description": "Tăng hoặc giảm độ sáng màn hình theo delta", "parameters": {"type": "object", "properties": {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}, "required": ["delta"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "display.set_brightness", "description": "Đặt độ sáng màn hình từ 0 đến 100", "parameters": {"type": "object", "properties": {"brightness": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["brightness"], "additionalProperties": False}}},
-    {"type": "function", "function": {"name": "app.launch", "description": "Mở ứng dụng DomOS", "parameters": {"type": "object", "properties": {"app": {"type": "string", "enum": ["wallpaper", "clock", "man-utd", "codex-credit"]}}, "required": ["app"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "app.launch", "description": "Mở ứng dụng DomOS", "parameters": {"type": "object", "properties": {"app": {"type": "string", "enum": ["wallpaper", "clock", "tracking-status", "man-utd", "codex-credit"]}}, "required": ["app"], "additionalProperties": False}}},
 ]
 
 

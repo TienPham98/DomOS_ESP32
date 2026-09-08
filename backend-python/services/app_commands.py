@@ -5,12 +5,14 @@ import unicodedata
 
 
 APP_CONFIRMATIONS = {
+    "tracking-status": "Đã mở ứng dụng Tracking Status rồi nhé!",
     "codex-credit": "Đã mở thông tin hạn mức Codex rồi nhé!",
     "man-utd": "Đã mở lịch thi đấu Manchester United rồi nhé!",
     "wallpaper": "Đã mở ứng dụng hình nền rồi nhé!",
     "clock": "Đã mở ứng dụng đồng hồ rồi nhé!",
 }
 APP_ALIASES = {
+    "tracking-status": r"tracking status|trang thai theo doi|theo doi trang thai",
     "codex-credit": r"(?:codex|co dex|code x)(?: credit(?: checking)?| usage| han muc| gioi han)?|code credit(?: checking)?",
     "man-utd": r"manchester(?: united)?|man utd|mu thi dau",
     "wallpaper": r"wallpaper|hinh nen",

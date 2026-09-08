@@ -17,6 +17,11 @@ from services.openrouter_voice_service import VoiceSession
 
 
 class AppCommandTests(unittest.TestCase):
+    def test_tracking_status_name_opens_merged_app(self):
+        for phrase in ("mở tracking status", "theo dõi trạng thái"):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(requested_app(phrase), "tracking-status")
+
     def test_check_shortcuts_open_requested_apps(self):
         for phrase, app in (
             ("kiểm tra lịch thi đấu bóng đá", "man-utd"),

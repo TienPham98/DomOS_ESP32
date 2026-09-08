@@ -215,8 +215,7 @@ void ToAssistant(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_use
 void ToSmartHome(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("smart-home"); }
 void ToSettings(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("settings"); }
 void ToOta(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("ota"); }
-void ToManUtd(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("man-utd"); }
-void ToCodexCredit(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("codex-credit"); }
+void ToTrackingStatus(lv_event_t *event) { static_cast<AppManager *>(lv_event_get_user_data(event))->Launch("tracking-status"); }
 
 class ScreenApp : public IApp {
 public:
@@ -268,10 +267,11 @@ public:
             Button(screen_, "AI", LV_ALIGN_CENTER, 75, -43, ToAssistant, &manager_),
             Button(screen_, "Smart Home", LV_ALIGN_CENTER, -75, 3, ToSmartHome, &manager_),
             Button(screen_, "Settings", LV_ALIGN_CENTER, 75, 3, ToSettings, &manager_),
-            Button(screen_, "Man Utd", LV_ALIGN_CENTER, -75, 49, ToManUtd, &manager_),
-            Button(screen_, "Codex", LV_ALIGN_CENTER, 75, 49, ToCodexCredit, &manager_),
         };
         for (lv_obj_t *button : buttons) lv_obj_set_size(button, 136, 38);
+        lv_obj_t *tracking = Button(screen_, "Tracking Status", LV_ALIGN_CENTER, 0, 49,
+                                    ToTrackingStatus, &manager_);
+        lv_obj_set_size(tracking, 286, 38);
         lv_obj_add_event_cb(screen_, [](lv_event_t *event) {
             lv_indev_t *indev = lv_indev_get_act();
             if (indev != nullptr && lv_indev_get_gesture_dir(indev) == LV_DIR_LEFT) {
@@ -1299,13 +1299,18 @@ public:
 
     void Show() override
     {
-        visible_ = true;
-        ScreenApp::Show();
-        RenderCache();
+        ShowCached();
         StartRefresh(false);
     }
 
     void Hide() override { visible_ = false; }
+
+    void ShowCached()
+    {
+        visible_ = true;
+        ScreenApp::Show();
+        RenderCache();
+    }
 
 private:
     struct FetchContext {
@@ -1518,13 +1523,18 @@ public:
 
     void Show() override
     {
-        visible_ = true;
-        ScreenApp::Show();
-        RenderCache();
+        ShowCached();
         StartRefresh(false);
     }
 
     void Hide() override { visible_ = false; }
+
+    void ShowCached()
+    {
+        visible_ = true;
+        ScreenApp::Show();
+        RenderCache();
+    }
 
 private:
     struct FetchContext {
@@ -1718,6 +1728,102 @@ private:
     lv_timer_t *refresh_timer_ = nullptr;
     std::atomic<bool> refresh_running_{false};
     bool deferred_force_ = false;
+    bool visible_ = false;
+};
+
+
+class TrackingStatusApp final : public ScreenApp {
+public:
+    explicit TrackingStatusApp(AppManager &manager)
+        : ScreenApp(manager), man_utd_(manager), codex_credit_(manager)
+    {
+    }
+
+    const char *Id() const override { return "tracking-status"; }
+
+    void Create() override
+    {
+        man_utd_.Create();
+        codex_credit_.Create();
+        rotate_timer_ = lv_timer_create([](lv_timer_t *timer) {
+            auto *app = static_cast<TrackingStatusApp *>(timer->user_data);
+            if (app->visible_) app->ShowNextView();
+        }, kRotationPeriodMs, this);
+        if (rotate_timer_ != nullptr) lv_timer_pause(rotate_timer_);
+    }
+
+    void Destroy() override
+    {
+        if (rotate_timer_ != nullptr) {
+            lv_timer_del(rotate_timer_);
+            rotate_timer_ = nullptr;
+        }
+        man_utd_.Destroy();
+        codex_credit_.Destroy();
+    }
+
+    void Show() override
+    {
+        visible_ = true;
+        refreshed_[0] = false;
+        refreshed_[1] = false;
+        ShowActiveView();
+        if (rotate_timer_ != nullptr) {
+            lv_timer_set_period(rotate_timer_, kRotationPeriodMs);
+            lv_timer_reset(rotate_timer_);
+            lv_timer_resume(rotate_timer_);
+        }
+    }
+
+    void Hide() override
+    {
+        visible_ = false;
+        man_utd_.Hide();
+        codex_credit_.Hide();
+        if (rotate_timer_ != nullptr) lv_timer_pause(rotate_timer_);
+    }
+
+    void SelectInitialView(const std::string &requested_app)
+    {
+        if (requested_app == "man-utd") active_view_ = View::ManchesterUnited;
+        else if (requested_app == "codex-credit") active_view_ = View::CodexCredit;
+    }
+
+private:
+    enum class View : uint8_t {
+        ManchesterUnited,
+        CodexCredit,
+    };
+
+    static constexpr uint32_t kRotationPeriodMs = 10U * 1000U;
+
+    void ShowActiveView()
+    {
+        const size_t index = active_view_ == View::ManchesterUnited ? 0U : 1U;
+        if (active_view_ == View::ManchesterUnited) {
+            codex_credit_.Hide();
+            if (refreshed_[index]) man_utd_.ShowCached();
+            else man_utd_.Show();
+        } else {
+            man_utd_.Hide();
+            if (refreshed_[index]) codex_credit_.ShowCached();
+            else codex_credit_.Show();
+        }
+        refreshed_[index] = true;
+    }
+
+    void ShowNextView()
+    {
+        active_view_ = active_view_ == View::ManchesterUnited
+            ? View::CodexCredit : View::ManchesterUnited;
+        ShowActiveView();
+    }
+
+    ManchesterUnitedApp man_utd_;
+    CodexCreditApp codex_credit_;
+    lv_timer_t *rotate_timer_ = nullptr;
+    View active_view_ = View::ManchesterUnited;
+    bool refreshed_[2] = {false, false};
     bool visible_ = false;
 };
 
@@ -2323,8 +2429,7 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
     static LauncherApp launcher(*this);
     static ClockApp clock(*this);
     static WallpaperApp wallpaper(*this);
-    static ManchesterUnitedApp man_utd(*this);
-    static CodexCreditApp codex_credit(*this);
+    static TrackingStatusApp tracking_status(*this);
     static DashboardApp dashboard(*this);
     static SettingsApp settings(*this);
     static WifiSetupApp wifi_setup(*this);
@@ -2334,8 +2439,7 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
     Register(&launcher);
     Register(&clock);
     Register(&wallpaper);
-    Register(&man_utd);
-    Register(&codex_credit);
+    Register(&tracking_status);
     Register(&dashboard);
     Register(&settings);
     Register(&wifi_setup);
@@ -2348,19 +2452,24 @@ bool AppManager::Start(ES3C28PBoard *board, WifiService *wifi, MqttService *mqtt
 
 void AppManager::Launch(const std::string &app)
 {
+    const std::string resolved_app =
+        (app == "man-utd" || app == "codex-credit") ? "tracking-status" : app;
     for (size_t index = 0; index < app_count_; ++index) {
         AppEntry &entry = apps_[index];
-        if (app != entry.app->Id()) continue;
+        if (resolved_app != entry.app->Id()) continue;
         if (current_ != nullptr && current_ != entry.app) current_->Hide();
         if (!entry.created) {
             entry.app->Create();
             entry.created = true;
         }
+        if (resolved_app == "tracking-status") {
+            static_cast<TrackingStatusApp *>(entry.app)->SelectInitialView(app);
+        }
         current_ = entry.app;
         current_->Show();
         const unsigned free_heap_kb = esp_get_free_heap_size() / 1024U;
-        ESP_LOGI("apps", "Launched '%s' [heap: %uKB free]", app.c_str(), free_heap_kb);
-        AddSystemLog("INFO", "apps", "Launched '%s' [heap: %uKB free]", app.c_str(), free_heap_kb);
+        ESP_LOGI("apps", "Launched '%s' [heap: %uKB free]", resolved_app.c_str(), free_heap_kb);
+        AddSystemLog("INFO", "apps", "Launched '%s' [heap: %uKB free]", resolved_app.c_str(), free_heap_kb);
         return;
     }
 }
@@ -2433,7 +2542,7 @@ bool AppManager::RequestWallpaperSync()
 
 void AppManager::ShowNextHomePage()
 {
-    static const char *pages[] = {"clock", "dashboard", "smart-home", "assistant", "man-utd", "codex-credit"};
+    static const char *pages[] = {"clock", "dashboard", "smart-home", "assistant", "tracking-status"};
     size_t current_page = 0;
     for (size_t index = 0; index < sizeof(pages) / sizeof(pages[0]); ++index) {
         if (current_ != nullptr && std::string(current_->Id()) == pages[index]) current_page = index;

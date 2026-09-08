@@ -675,6 +675,7 @@ void AssistantService::HandleMcp(const char *json)
                 cJSON *app_enum = cJSON_AddArrayToObject(app_name, "enum");
                 cJSON_AddItemToArray(app_enum, cJSON_CreateString("wallpaper"));
                 cJSON_AddItemToArray(app_enum, cJSON_CreateString("clock"));
+                cJSON_AddItemToArray(app_enum, cJSON_CreateString("tracking-status"));
                 cJSON_AddItemToArray(app_enum, cJSON_CreateString("man-utd"));
                 cJSON_AddItemToArray(app_enum, cJSON_CreateString("codex-credit"));
                 cJSON *launch_required = cJSON_AddArrayToObject(launch_schema, "required");
@@ -807,6 +808,7 @@ void AssistantService::HandleMcp(const char *json)
                     cJSON *app_j = args ? cJSON_GetObjectItemCaseSensitive(args, "app") : nullptr;
                     const char *app = cJSON_IsString(app_j) ? app_j->valuestring : "";
                     if (strcmp(app, "wallpaper") != 0 && strcmp(app, "clock") != 0 &&
+                        strcmp(app, "tracking-status") != 0 &&
                         strcmp(app, "man-utd") != 0 && strcmp(app, "codex-credit") != 0) {
                         SendMcpResult(req_id, "unsupported app", true);
                     } else if (apps_ == nullptr) {

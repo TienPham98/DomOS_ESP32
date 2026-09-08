@@ -233,6 +233,7 @@ esp_err_t LaunchApiHandler(httpd_req_t *request)
         else if (std::strstr(buf, "dashboard")) app = "dashboard";
         else if (std::strstr(buf, "settings")) app = "settings";
         else if (std::strstr(buf, "wallpaper")) app = "wallpaper";
+        else if (std::strstr(buf, "tracking-status")) app = "tracking-status";
         else if (std::strstr(buf, "man-utd")) app = "man-utd";
         else if (std::strstr(buf, "codex-credit")) app = "codex-credit";
         else if (std::strstr(buf, "smart-home")) app = "smart-home";
