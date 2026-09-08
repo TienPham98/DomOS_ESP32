@@ -21,6 +21,8 @@ from services.openrouter_voice_service import (
     handle_openrouter_voice,
     primary_llm_model,
     primary_llm_provider,
+    primary_stt_provider,
+    primary_wake_stt_provider,
     voice_registry,
 )
 from services.football_service import football_service
@@ -153,8 +155,10 @@ async def health_check() -> dict:
         "active_sessions": voice_registry.count,
         "model": primary_llm_model(),
         "audio_model": settings.OPENROUTER_AUDIO_MODEL,
-        "stt_provider": settings.STT_PROVIDER,
-        "wake_stt_provider": settings.WAKE_STT_PROVIDER,
+        "stt_provider": primary_stt_provider(),
+        "stt_configured_provider": settings.STT_PROVIDER,
+        "wake_stt_provider": primary_wake_stt_provider(),
+        "wake_stt_configured_provider": settings.WAKE_STT_PROVIDER,
         "wake_stt_timeout_sec": settings.WAKE_STT_TIMEOUT_SEC,
         "wake_stt_openai_fallback": bool(
             settings.WAKE_STT_OPENAI_FALLBACK and settings.OPENAI_API_KEY

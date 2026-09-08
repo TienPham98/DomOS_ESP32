@@ -557,6 +557,21 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         session._transcribe_google.assert_not_awaited()
         session._transcribe_openrouter.assert_not_awaited()
 
+    async def test_openai_key_overrides_stale_google_deployment_setting(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session._transcribe_openai = AsyncMock(return_value="xin chào")
+        session._transcribe_google = AsyncMock()
+        with (
+            patch.object(settings, "STT_PROVIDER", "google-web"),
+            patch.object(settings, "OPENAI_API_KEY", "openai-test"),
+            patch.object(settings, "STT_OPENROUTER_FALLBACK", False),
+        ):
+            transcript = await session.transcribe(bytes(PCM_FRAME_BYTES))
+
+        self.assertEqual(transcript, "xin chào")
+        session._transcribe_openai.assert_awaited_once()
+        session._transcribe_google.assert_not_awaited()
+
     async def test_empty_openai_transcript_falls_back_to_google(self):
         session = VoiceSession(FakeWebSocket(), "board", "session")
         session._transcribe_openai = AsyncMock(return_value="")

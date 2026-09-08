@@ -42,6 +42,9 @@ class BackgroundWakeTests(unittest.IsolatedAsyncioTestCase):
         self.provider_patch = patch.object(settings, "WAKE_STT_PROVIDER", "google-web")
         self.provider_patch.start()
         self.addCleanup(self.provider_patch.stop)
+        self.openai_key_patch = patch.object(settings, "OPENAI_API_KEY", "")
+        self.openai_key_patch.start()
+        self.addCleanup(self.openai_key_patch.stop)
         self.language_patch = patch.object(settings, "STT_LANGUAGE", "vi-VN")
         self.language_patch.start()
         self.addCleanup(self.language_patch.stop)
@@ -198,7 +201,7 @@ class BackgroundWakeTests(unittest.IsolatedAsyncioTestCase):
         self.session._transcribe_openrouter.assert_awaited_once()
         self.assertEqual(self.session.state, "LISTENING")
 
-    async def test_short_noise_does_not_spend_fallback_quota(self):
+    async def test_openai_primary_handles_short_wake_capture(self):
         self.session.transcribe_wake_google = AsyncMock(return_value=[
             ("vi-VN", ""), ("en-US", ""),
         ])
@@ -212,8 +215,8 @@ class BackgroundWakeTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.session.run_wake_check(bytes(PCM_FRAME_BYTES))
 
-        self.session._transcribe_openai.assert_not_awaited()
-        self.assertEqual(self.session.state, "WAKE_WORD")
+        self.session._transcribe_openai.assert_awaited_once()
+        self.assertEqual(self.session.state, "LISTENING")
 
     async def test_configured_wake_provider_remains_selectable(self):
         self.session.transcribe = AsyncMock(return_value="Hey Dom")

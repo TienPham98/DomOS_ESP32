@@ -126,6 +126,19 @@ def primary_llm_model() -> str:
     return settings.OPENAI_MODEL if primary_llm_provider() == "openai" else settings.OPENROUTER_MODEL
 
 
+def primary_stt_provider() -> str:
+    """Keep OpenAI first whenever its credential is available.
+
+    This deliberately overrides stale deployment values such as
+    ``STT_PROVIDER=google-web`` without mutating or re-exporting cloud secrets.
+    """
+    return "openai" if settings.OPENAI_API_KEY else settings.STT_PROVIDER.strip().lower()
+
+
+def primary_wake_stt_provider() -> str:
+    return "configured" if settings.OPENAI_API_KEY else settings.WAKE_STT_PROVIDER
+
+
 def validate_dom_hello(message: dict[str, Any]) -> None:
     expected = {"codec": "pcm", "sample_rate": 16_000, "channels": 1, "frame_duration": 60}
     audio = message.get("audio_params")
@@ -624,7 +637,8 @@ class VoiceSession:
         started = time.monotonic()
         try:
             wake_pcm = normalize_wake_pcm(pcm)
-            if settings.WAKE_STT_PROVIDER == "google-web":
+            wake_provider = primary_wake_stt_provider()
+            if wake_provider == "google-web":
                 transcripts = await self.transcribe_wake_google(wake_pcm)
             else:
                 transcripts = [(
@@ -640,7 +654,7 @@ class VoiceSession:
             )
             if (
                 not matched
-                and settings.WAKE_STT_PROVIDER == "google-web"
+                and wake_provider == "google-web"
                 and self.should_use_wake_fallback()
             ):
                 transcripts.extend(await self.transcribe_wake_fallback(wake_pcm))
@@ -802,7 +816,7 @@ class VoiceSession:
         """
         prepared = normalize_speech_pcm(pcm)
         selected_language = language or settings.STT_LANGUAGE
-        primary = settings.STT_PROVIDER.strip().lower()
+        primary = primary_stt_provider()
         openai_cooldown_key = "openai-wake-stt" if timeout is not None else "openai-stt"
         if primary == "openai":
             providers = ["openai", "google-web"]
