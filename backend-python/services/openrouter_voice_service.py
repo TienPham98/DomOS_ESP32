@@ -869,12 +869,16 @@ class VoiceSession:
                                 prepared,
                                 timeout=timeout,
                             )
-                            _, matched_text, matched, _ = resolve_wake_transcripts(
+                            matched_language, matched_text, matched, _ = resolve_wake_transcripts(
                                 candidates,
                                 selected_language,
                             )
                             if matched:
-                                return matched_text
+                                # Preserve direct transcripts (including a
+                                # command suffix). A learned bilingual pair is
+                                # canonicalized because wrapping it in one
+                                # transcript would otherwise lose the pairing.
+                                return "Hey Dom" if matched_language == "bilingual-signature" else matched_text
                             # A non-wake diagnostic such as "noise" must not
                             # block the next quota-approved fallback provider.
                             return ""
