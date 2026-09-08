@@ -68,6 +68,15 @@ OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4o-mini
 OPENAI_STT_MODEL=gpt-4o-mini-transcribe
 LLM_PROVIDER_ORDER=openai,openrouter
+LLM_STREAMING_ENABLED=true
+ASSISTANT_LOCATION=Việt Nam
+ASSISTANT_TIMEZONE=Asia/Bangkok
+WEB_SEARCH_PROVIDER=auto
+WEB_SEARCH_BASE_URL=<WEB_SEARCH_PROVIDER_URL>
+WEB_SEARCH_TIMEOUT_SEC=8
+WEB_SEARCH_MAX_RESULTS=3
+TAVILY_API_KEY=
+SERPER_API_KEY=
 STT_LANGUAGE=vi-VN
 WAKE_STT_PROVIDER=configured
 WAKE_STT_TIMEOUT_SEC=8
@@ -116,6 +125,12 @@ Tạo API key miễn phí tại football-data.org rồi chỉ lưu key và URL t
 | `STT_PROVIDER` | `openai` | `openai`, `google-web` hoặc `openrouter`; có OpenAI key thì luôn ưu tiên OpenAI |
 | `OPENAI_API_KEY` | rỗng | Bắt buộc cho ChatGPT và OpenAI STT |
 | `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | Model nhận dạng âm thanh OpenAI |
+| `LLM_STREAMING_ENABLED` | `true` | Stream token và phát TTS ngay khi hoàn thành một vế câu |
+| `ASSISTANT_LOCATION` | `Việt Nam` | Địa điểm được chèn vào prompt động mỗi lượt |
+| `ASSISTANT_TIMEZONE` | `Asia/Bangkok` | Múi giờ dùng cho câu hỏi ngày giờ và prompt |
+| `WEB_SEARCH_PROVIDER` | `auto` | Chọn Tavily, Serper hoặc DuckDuckGo theo key hiện có |
+| `WEB_SEARCH_BASE_URL` | theo `.env` | Endpoint của nhà cung cấp tìm kiếm, không hard-code trong source |
+| `WEB_SEARCH_MAX_RESULTS` | `3` | Số kết quả ngắn đưa lại cho LLM tổng hợp |
 | `STT_LANGUAGE` | `vi-VN` | Ngôn ngữ câu lệnh; wake còn chạy thêm `en-US` |
 | `WAKE_STT_PROVIDER` | `configured` | Dùng OpenAI STT trước cho wake; Google và OpenRouter là các tuyến dự phòng |
 | `WAKE_STT_TIMEOUT_SEC` | `8` | Timeout mỗi provider khi nhận dạng wake word |
@@ -236,13 +251,27 @@ Không chấp nhận transcript rỗng làm wake. Khi test lặp, sau một wake
 
 ```text
 PCM -> VAD end -> listen.processing -> STT vi-VN
-    -> direct deterministic command hoặc OpenAI chat/tool call
+    -> lọc hallucination ASR
+    -> fast path deterministic hoặc OpenAI chat/tool call
+    -> web_search cho dữ liệu thời gian thực khi cần
     -> llm text/emotion
-    -> TTS sentence_start + binary PCM
+    -> stream theo dấu câu -> chuẩn hóa TTS -> sentence_start + binary PCM
     -> tts.stop -> WAKE_WORD
 ```
 
-Lệnh volume/brightness/app có parser trực tiếp để vẫn ổn định và phản hồi nhanh. Yêu cầu khác đi qua OpenAI; OpenRouter chỉ nhận lượt hội thoại sau khi OpenAI xác nhận hết credit/quota.
+Lệnh volume, brightness, bật tắt màn hình, tắt loa, ngày giờ, trạng thái và app
+có parser trực tiếp để phản hồi nhanh, không chờ LLM. Mọi lệnh phần cứng vẫn phải
+nhận MCP ACK từ board rồi mới báo thành công. Yêu cầu khác đi qua OpenAI;
+OpenRouter chỉ nhận lượt hội thoại sau khi OpenAI xác nhận hết credit/quota.
+
+Prompt hệ thống được tạo lại ở mỗi lượt với thời gian, ngày, múi giờ và địa điểm
+hiện tại. Prompt yêu cầu tiếng Việt mặc định, câu trả lời một đến hai câu dưới
+40 từ và dùng lịch sử hội thoại cho câu nói tiếp nối.
+
+Các câu hỏi chứa dấu hiệu dữ liệu thay đổi như hôm nay, mới nhất, thời tiết, giá,
+kết quả hoặc lịch thi đấu sẽ ép tool `web_search` ở vòng đầu. Gateway lấy tối đa
+ba kết quả qua Tavily, Serper hoặc DuckDuckGo và gửi lại cho LLM tổng hợp. Tool
+này chạy trên gateway, không gửi xuống ESP32.
 
 Lệnh mở Codex Credit: “mở ứng dụng Codex Credit”, “mở Codex”, “Codex usage”
 hoặc “code credit checking”. Parser hỗ trợ câu không dấu và bản nhận dạng nhầm
@@ -264,8 +293,15 @@ sẽ bị chặn. Tool trace được lưu trong lịch sử để đối chiế
 của firmware (MCP result xác nhận yêu cầu được nhận, không phải ảnh chụp màn hình).
 
 Mọi câu LLM đi qua bộ chuẩn hóa văn bản thuần trước khi lưu SQLite, hiển thị LCD
-và phát TTS. Bộ lọc bỏ heading, `**bold**`, `***`, đường kẻ, bullet, link, code
-fence và HTML; lịch sử cũ được làm sạch idempotent khi gateway khởi động.
+và phát TTS. Bộ lọc bỏ heading, Markdown, emoji, dấu ngoặc, link, code và HTML;
+đồng thời đổi giờ, nhiệt độ, phần trăm, tốc độ, công suất, phiên bản và từ mượn
+phổ biến sang dạng tiếng Việt dễ đọc. Lịch sử cũ được làm sạch idempotent khi
+gateway khởi động.
+
+Transcript ASR đi qua blacklist cho các câu rác phổ biến, filler quá ngắn và từ
+lặp do tiếng ồn. Wake word ngắn như `Hey` và `Dom` được giữ lại. Khi LLM stream,
+gateway xẻ tại dấu phẩy, chấm, hỏi hoặc cảm thán và đưa vế hoàn chỉnh vào hàng
+đợi TTS; LLM tiếp tục sinh phần sau trong lúc board phát phần trước.
 
 OpenAI LLM và OpenAI STT có circuit riêng. Lỗi STT thông thường chỉ chuyển sang
 Google STT và không làm ChatGPT bị bỏ qua. Nếu OpenAI xác nhận hết credit, STT

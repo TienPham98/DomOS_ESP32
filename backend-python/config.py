@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     OPENAI_STT_MODEL: str
     OPENAI_TIMEOUT_SEC: float
     LLM_PROVIDER_ORDER: str
+    LLM_STREAMING_ENABLED: bool = True
+    ASSISTANT_LOCATION: str = "Việt Nam"
+    ASSISTANT_TIMEZONE: str = "Asia/Bangkok"
+    WEB_SEARCH_PROVIDER: Literal["auto", "duckduckgo", "tavily", "serper", "disabled"] = "auto"
+    WEB_SEARCH_BASE_URL: str
+    WEB_SEARCH_TIMEOUT_SEC: float = Field(default=8.0, gt=0, le=30)
+    WEB_SEARCH_MAX_RESULTS: int = Field(default=3, ge=1, le=5)
+    TAVILY_API_KEY: str = ""
+    SERPER_API_KEY: str = ""
     STT_PROVIDER: str
     STT_LANGUAGE: str
     # Wake checks need not wait for the command STT provider's quota/fallbacks.

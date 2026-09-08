@@ -17,7 +17,7 @@ import wave
 from array import array
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import av
 import edge_tts
@@ -27,6 +27,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from gtts import gTTS
 
 from config import settings
+from services.assistant_prompt import assistant_now, build_system_prompt
 from services.app_commands import (
     APP_COMMAND_HELP,
     APP_CONFIRMATIONS,
@@ -36,7 +37,14 @@ from services.app_commands import (
     requested_app,
 )
 from services.conversation_store import ConversationStore
-from services.text_normalization import plain_speech_text
+from services.text_normalization import (
+    PunctuationChunker,
+    filter_asr_transcript,
+    fold_vietnamese,
+    normalize_tts_text,
+    plain_speech_text,
+)
+from services.web_search_service import needs_web_search, web_search_service
 
 logger = logging.getLogger("domos.openrouter")
 
@@ -59,16 +67,6 @@ WAKE_MIN_SPEECH_FRAMES = 3
 PROVIDER_RETRY_SECONDS = 300
 NO_SPEECH_RESPONSE = "Mình chưa nghe rõ. Bạn nói lại giúp mình nhé."
 
-SYSTEM_PROMPT = """Bạn là Dom, trợ lý giọng nói tiếng Việt của DomOS trên thiết bị ESP32-S3.
-Luôn hiểu ý định và trả lời bằng tiếng Việt tự nhiên, ngắn gọn, thân thiện, phù hợp để đọc thành tiếng.
-Tận dụng ngữ cảnh hội thoại để hiểu câu nói tiếp nối; không lặp lại thông tin người dùng vừa nói.
-Trả lời trực tiếp trước, chỉ giải thích thêm khi hữu ích. Nếu thiếu dữ kiện quan trọng, hỏi đúng một câu ngắn.
-Không dùng Markdown, tiêu đề, danh sách ký hiệu, dấu sao hoặc mô tả nội bộ như “đang gọi công cụ”.
-Bạn có thể điều khiển thiết bị bằng các công cụ được cung cấp. Khi người dùng yêu cầu điều khiển,
-phải gọi công cụ phù hợp và chỉ xác nhận thành công sau khi nhận kết quả công cụ. Không bịa kết quả.
-Không bịa lịch thi đấu, hạn mức, trạng thái hiện tại hoặc khả năng không có trong công cụ.
-Với lệnh tăng/giảm không nêu mức, dùng delta 10 hoặc -10. Chỉ trả lời nội dung cần nói."""
-
 TOOLS = [
     {"type": "function", "function": {"name": "device.get_status", "description": "Lấy trạng thái trợ lý và âm thanh", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {"name": "speaker.set_volume", "description": "Đặt âm lượng loa từ 0 đến 100", "parameters": {"type": "object", "properties": {"volume": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["volume"], "additionalProperties": False}}},
@@ -76,6 +74,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "display.adjust_brightness", "description": "Tăng hoặc giảm độ sáng màn hình theo delta", "parameters": {"type": "object", "properties": {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}, "required": ["delta"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "display.set_brightness", "description": "Đặt độ sáng màn hình từ 0 đến 100", "parameters": {"type": "object", "properties": {"brightness": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["brightness"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "app.launch", "description": "Mở ứng dụng DomOS", "parameters": {"type": "object", "properties": {"app": {"type": "string", "enum": ["wallpaper", "clock", "tracking-status", "man-utd", "codex-credit"]}}, "required": ["app"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "web_search", "description": "Tìm kiếm web cho tin tức, thời tiết, giá cả, thể thao và dữ liệu thời gian thực", "parameters": {"type": "object", "properties": {"query": {"type": "string", "minLength": 2}}, "required": ["query"], "additionalProperties": False}}},
 ]
 
 
@@ -260,6 +259,26 @@ def _tool_succeeded(result: Any) -> bool:
     return isinstance(result, dict) and bool(result) and not (
         result.get("isError") or result.get("error")
     )
+
+
+def _tool_result_text(result: Any) -> str:
+    if not isinstance(result, dict):
+        return ""
+    parts = result.get("content") or []
+    if isinstance(parts, list):
+        return " ".join(
+            str(part.get("text") or "") for part in parts if isinstance(part, dict)
+        ).strip()
+    return str(result.get("text") or "").strip()
+
+
+def _tool_result_object(result: Any) -> dict[str, Any]:
+    text = _tool_result_text(result)
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _wake_signature_text(text: str) -> str:
@@ -722,6 +741,21 @@ class VoiceSession:
 
     async def process_transcript(self, transcript: str) -> None:
         turn_id = ""
+        speech_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        chunker = PunctuationChunker()
+        streamed_chunks = 0
+
+        async def queue_delta(delta: str) -> None:
+            nonlocal streamed_chunks
+            for raw_chunk in chunker.feed(delta):
+                chunk = normalize_tts_text(raw_chunk)
+                if chunk:
+                    streamed_chunks += 1
+                    await speech_queue.put(chunk)
+
+        speech_task = asyncio.create_task(
+            self.speak_stream(speech_queue), name=f"tts-stream-{self.session_id}"
+        )
         try:
             logger.info("STT device=%s text=%s", self.device_id, transcript)
             await self.send_json({"type": "stt", "text": transcript})
@@ -729,17 +763,31 @@ class VoiceSession:
             turn_id = await conversation_store.create_turn(
                 self.device_id, transcript, "pending", "pending"
             )
-            answer = await self.chat(history, transcript, turn_id)
-            answer = plain_speech_text(answer)
+            answer = await self.chat(history, transcript, turn_id, on_text_delta=queue_delta)
+            tail = normalize_tts_text(chunker.flush())
+            if tail:
+                streamed_chunks += 1
+                await speech_queue.put(tail)
+            await speech_queue.put(None)
+            answer = normalize_tts_text(answer)
             await conversation_store.update_execution(
                 turn_id, self.last_llm_provider, self.last_llm_model
             )
             await conversation_store.complete_turn(turn_id, answer)
             await self.send_json({"type": "llm", "emotion": "happy", "text": answer})
-            await self.speak(answer)
+            streamed = await speech_task
+            if not streamed or streamed_chunks == 0:
+                await self.speak(answer)
+        except asyncio.CancelledError:
+            speech_task.cancel()
+            await asyncio.gather(speech_task, return_exceptions=True)
+            raise
         except Exception as exc:
+            if not speech_task.done():
+                await speech_queue.put(None)
+            await asyncio.gather(speech_task, return_exceptions=True)
             logger.exception("Voice pipeline failed device=%s", self.device_id)
-            message = "Xin lỗi, Dom chưa xử lý được yêu cầu này. Bạn thử lại nhé."
+            message = normalize_tts_text("Xin lỗi, Dom chưa xử lý được yêu cầu này. Bạn thử lại nhé.")
             if turn_id:
                 await conversation_store.complete_turn(turn_id, message)
             with contextlib.suppress(Exception):
@@ -788,13 +836,131 @@ class VoiceSession:
             raise _openai_api_error(response, "chat")
         return response.json()
 
-    async def _llm(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _stream_completion(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float,
+        provider: str,
+        on_text_delta: Callable[[str], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """Reassemble an OpenAI-compatible SSE stream, including tool calls."""
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST", url, headers=headers, json={**payload, "stream": True}
+            ) as response:
+                if response.is_error:
+                    await response.aread()
+                    if provider == "openai":
+                        raise _openai_api_error(response, "chat")
+                    try:
+                        error = response.json().get("error") or {}
+                        detail = f"{error.get('code', 'unknown')}: {error.get('message', 'request failed')}"
+                    except (ValueError, AttributeError):
+                        detail = "request failed"
+                    raise RuntimeError(f"OpenRouter HTTP {response.status_code}: {detail}")
+
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Ignoring malformed %s SSE event", provider)
+                        continue
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    delta = choice.get("delta") or {}
+                    text_delta = delta.get("content")
+                    if isinstance(text_delta, str) and text_delta:
+                        content_parts.append(text_delta)
+                        await on_text_delta(text_delta)
+                    for raw_call in delta.get("tool_calls") or []:
+                        index = int(raw_call.get("index", 0))
+                        call = tool_calls.setdefault(index, {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                        if raw_call.get("id"):
+                            call["id"] += str(raw_call["id"])
+                        if raw_call.get("type"):
+                            call["type"] = raw_call["type"]
+                        function = raw_call.get("function") or {}
+                        call["function"]["name"] += str(function.get("name") or "")
+                        call["function"]["arguments"] += str(function.get("arguments") or "")
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content_parts) or None,
+        }
+        if tool_calls:
+            message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+        return {"choices": [{"message": message, "finish_reason": finish_reason}]}
+
+    async def _openai_stream(
+        self, payload: dict[str, Any], on_text_delta: Callable[[str], Awaitable[None]]
+    ) -> dict[str, Any]:
+        if not settings.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        return await self._stream_completion(
+            url=f"{settings.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            payload=payload,
+            timeout=settings.OPENAI_TIMEOUT_SEC,
+            provider="openai",
+            on_text_delta=on_text_delta,
+        )
+
+    async def _openrouter_stream(
+        self, payload: dict[str, Any], on_text_delta: Callable[[str], Awaitable[None]]
+    ) -> dict[str, Any]:
+        if not settings.OPENROUTER_API_KEY:
+            raise RuntimeError("OPENROUTER_API_KEY is not configured")
+        return await self._stream_completion(
+            url=f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": settings.OPENROUTER_HTTP_REFERER,
+                "X-Title": "DomOS",
+            },
+            payload=payload,
+            timeout=settings.OPENROUTER_TIMEOUT_SEC,
+            provider="openrouter",
+            on_text_delta=on_text_delta,
+        )
+
+    async def _llm(
+        self,
+        payload: dict[str, Any],
+        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
         order = [name.strip().lower() for name in settings.LLM_PROVIDER_ORDER.split(",")]
         openai_configured = "openai" in order and bool(settings.OPENAI_API_KEY)
         quota_exhausted = openai_configured and not self.provider_ready("openai-llm-quota")
         if openai_configured and not quota_exhausted:
             try:
-                response = await self._openai({**payload, "model": settings.OPENAI_MODEL})
+                request = {**payload, "model": settings.OPENAI_MODEL}
+                response = (
+                    await self._openai_stream(request, on_text_delta)
+                    if on_text_delta is not None and settings.LLM_STREAMING_ENABLED
+                    else await self._openai(request)
+                )
                 self.last_llm_provider, self.last_llm_model = "openai", settings.OPENAI_MODEL
                 return response
             except Exception as exc:
@@ -811,7 +977,12 @@ class VoiceSession:
         if (quota_exhausted or not openai_configured) and "openrouter" in order:
             if not settings.OPENROUTER_API_KEY:
                 raise RuntimeError("OPENROUTER_API_KEY is not configured")
-            response = await self._openrouter({**payload, "model": settings.OPENROUTER_MODEL})
+            request = {**payload, "model": settings.OPENROUTER_MODEL}
+            response = (
+                await self._openrouter_stream(request, on_text_delta)
+                if on_text_delta is not None and settings.LLM_STREAMING_ENABLED
+                else await self._openrouter(request)
+            )
             self.last_llm_provider, self.last_llm_model = "openrouter", settings.OPENROUTER_MODEL
             return response
         raise RuntimeError("No configured LLM provider is available")
@@ -914,6 +1085,13 @@ class VoiceSession:
                 continue
 
             elapsed_ms = round((time.monotonic() - started) * 1000)
+            raw_transcript = transcript
+            transcript = filter_asr_transcript(transcript)
+            if raw_transcript and not transcript:
+                logger.info(
+                    "ASR hallucination dropped device=%s provider=%s text=%r",
+                    self.device_id, provider, raw_transcript,
+                )
             if transcript:
                 logger.info(
                     "STT provider selected device=%s provider=%s latency_ms=%d",
@@ -932,11 +1110,11 @@ class VoiceSession:
         if timeout is not None:
             recognizer.operation_timeout = timeout
         try:
-            return _clean_text(await asyncio.to_thread(
+            return filter_asr_transcript(_clean_text(await asyncio.to_thread(
                 recognizer.recognize_google,
                 audio,
                 language=language,
-            ))
+            )))
         except sr.UnknownValueError:
             return ""
         except sr.RequestError as exc:
@@ -964,7 +1142,7 @@ class VoiceSession:
             )
         if response.is_error:
             raise _openai_api_error(response, "STT")
-        return _clean_text(response.json().get("text"))
+        return filter_asr_transcript(_clean_text(response.json().get("text")))
 
     async def _transcribe_openrouter(self, pcm: bytes) -> str:
         audio = base64.b64encode(pcm_to_wav(pcm)).decode("ascii")
@@ -977,28 +1155,44 @@ class VoiceSession:
             "temperature": 0,
         })
         choices = response.get("choices") or []
-        return _clean_text(choices[0].get("message", {}).get("content")) if choices else ""
+        return filter_asr_transcript(
+            _clean_text(choices[0].get("message", {}).get("content"))
+        ) if choices else ""
 
-    async def chat(self, history: list[dict[str, str]], transcript: str, turn_id: str) -> str:
+    async def chat(
+        self,
+        history: list[dict[str, str]],
+        transcript: str,
+        turn_id: str,
+        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
+    ) -> str:
         direct = await self.try_direct_command(transcript, turn_id)
         if direct:
             self.last_llm_provider, self.last_llm_model = "device", "deterministic-command-router"
             return direct
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": build_system_prompt()},
             *[
                 {**item, "content": plain_speech_text(item.get("content", ""))}
                 for item in history
             ],
             {"role": "user", "content": transcript},
         ]
-        for _ in range(3):
-            response = await self._llm({
+        force_search = needs_web_search(transcript)
+        for round_index in range(3):
+            payload = {
                 "messages": messages,
                 "tools": TOOLS,
-                "tool_choice": "auto",
+                "tool_choice": (
+                    {"type": "function", "function": {"name": "web_search"}}
+                    if force_search and round_index == 0 else "auto"
+                ),
                 "temperature": 0.3,
-            })
+            }
+            response = (
+                await self._llm(payload, on_text_delta=on_text_delta)
+                if on_text_delta is not None else await self._llm(payload)
+            )
             choices = response.get("choices") or []
             if not choices:
                 raise RuntimeError("LLM returned no answer")
@@ -1033,7 +1227,11 @@ class VoiceSession:
                 else:
                     started = time.monotonic()
                     try:
-                        result = await self.call_device_tool(name, arguments)
+                        result = (
+                            await web_search_service.search(str(arguments.get("query") or transcript))
+                            if name == "web_search"
+                            else await self.call_device_tool(name, arguments)
+                        )
                         status = "success" if _tool_succeeded(result) else "error"
                     except Exception as exc:
                         result = {"error": str(exc)}
@@ -1065,10 +1263,11 @@ class VoiceSession:
         controls reliable when the free router selects a model with weak tool
         calling support.
         """
-        text = transcript.casefold().strip()
+        text = fold_vietnamese(transcript)
         name = ""
         arguments: dict[str, Any] = {}
         success_text = ""
+        response_kind = ""
         number_match = re.search(r"\b(100|[1-9]?\d)\b", text)
         number = int(number_match.group(1)) if number_match else None
 
@@ -1078,31 +1277,61 @@ class VoiceSession:
             success_text = APP_CONFIRMATIONS[app]
         elif is_unresolved_launch_request(transcript):
             return APP_COMMAND_HELP
-        elif "độ sáng" in text or "màn hình" in text:
-            if "tăng" in text:
+        elif re.search(r"\b(may|bao nhieu) gio\b", text):
+            current = assistant_now()
+            return f"Bây giờ là {current.hour} giờ {current.minute:02d} phút."
+        elif re.search(r"\b(ngay may|hom nay ngay|thu may)\b", text):
+            current = assistant_now()
+            return f"Hôm nay là ngày {current.day} tháng {current.month} năm {current.year}."
+        elif "man hinh" in text and re.search(r"\b(tat|dong)\b", text):
+            name, arguments = "display.set_brightness", {"brightness": 0}
+            success_text = "Màn hình đã tắt."
+        elif "man hinh" in text and re.search(r"\b(bat|mo)\b", text):
+            name, arguments = "display.set_brightness", {"brightness": number or 80}
+            success_text = "Màn hình đã bật."
+        elif "do sang" in text or "man hinh" in text:
+            if "tang" in text:
                 delta = number or 10
-            elif "giảm" in text:
+            elif "giam" in text:
                 delta = -(number or 10)
+            elif number is not None:
+                name, arguments = "display.set_brightness", {"brightness": number}
+                success_text = f"Độ sáng đã được đặt ở {number}."
+                delta = 0
             else:
                 return None
-            name, arguments = "display.adjust_brightness", {"delta": delta}
-            success_text = f"Độ sáng đã {'tăng' if delta > 0 else 'giảm'} {abs(delta)} rồi nhé!"
-        elif "âm lượng" in text or "loa" in text:
-            if "tăng" in text:
+            if not name:
+                name, arguments = "display.adjust_brightness", {"delta": delta}
+                success_text = f"Độ sáng đã {'tăng' if delta > 0 else 'giảm'} {abs(delta)}."
+                response_kind = "brightness"
+        elif ("am luong" in text or "loa" in text) and re.search(r"\b(tat|mute)\b", text):
+            name, arguments = "speaker.set_volume", {"volume": 0}
+            success_text = "Loa đã tắt."
+        elif "am luong" in text or "loa" in text:
+            if "tang" in text:
                 delta = number or 10
                 name, arguments = "speaker.adjust_volume", {"delta": delta}
-                success_text = f"Âm lượng đã tăng {delta} rồi nhé!"
-            elif "giảm" in text:
+                success_text = f"Âm lượng đã tăng {delta}."
+                response_kind = "volume"
+            elif "giam" in text:
                 delta = -(number or 10)
                 name, arguments = "speaker.adjust_volume", {"delta": delta}
-                success_text = f"Âm lượng đã giảm {abs(delta)} rồi nhé!"
+                success_text = f"Âm lượng đã giảm {abs(delta)}."
+                response_kind = "volume"
             elif number is not None:
                 name, arguments = "speaker.set_volume", {"volume": number}
-                success_text = f"Âm lượng đã được đặt ở {number} rồi nhé!"
+                success_text = f"Âm lượng đã được đặt ở {number}."
             else:
                 return None
-        elif "trạng thái" in text and ("thiết bị" in text or "dom" in text):
-            name, arguments, success_text = "device.get_status", {}, "Thiết bị đang hoạt động bình thường."
+        elif "pin" in text:
+            name, arguments = "device.get_status", {}
+            response_kind = "battery"
+        elif "wifi" in text or "mang" in text:
+            name, arguments = "device.get_status", {}
+            response_kind = "wifi"
+        elif "trang thai" in text and ("thiet bi" in text or "dom" in text):
+            name, arguments = "device.get_status", {}
+            response_kind = "status"
         else:
             return None
 
@@ -1119,6 +1348,30 @@ class VoiceSession:
         )
         if status == "error":
             return "Dom chưa điều khiển được thiết bị. Bạn thử lại nhé."
+        result_text = _tool_result_text(result)
+        status_data = _tool_result_object(result)
+        if response_kind == "volume":
+            match = re.search(r"volume set to (\d+)", result_text, flags=re.IGNORECASE)
+            if match:
+                return f"Âm lượng hiện tại là {match.group(1)}."
+        if response_kind == "brightness":
+            match = re.search(r"brightness set to (\d+)", result_text, flags=re.IGNORECASE)
+            if match:
+                return f"Độ sáng hiện tại là {match.group(1)}."
+        if response_kind == "battery":
+            battery = status_data.get("battery") or status_data.get("battery_percent")
+            return (
+                f"Pin còn {battery} phần trăm."
+                if battery is not None else "Thiết bị chưa cung cấp thông tin mức pin."
+            )
+        if response_kind == "wifi":
+            return "Kết nối oai-phai và máy chủ đang hoạt động."
+        if response_kind == "status":
+            volume = status_data.get("volume")
+            brightness = status_data.get("brightness")
+            if volume is not None and brightness is not None:
+                return f"Thiết bị đang hoạt động, âm lượng {volume}, độ sáng {brightness}."
+            return "Thiết bị đang hoạt động bình thường."
         return success_text
 
     async def call_device_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1144,30 +1397,56 @@ class VoiceSession:
         if future and not future.done():
             future.set_result(payload.get("result") or {"error": payload.get("error"), "isError": True})
 
+    async def _speak_sentence(self, sentence: str) -> None:
+        sentence = normalize_tts_text(sentence)
+        if not sentence:
+            return
+        await self.send_json({"type": "tts", "state": "sentence_start", "text": sentence})
+        if settings.TTS_PROVIDER == "google":
+            mp3 = await asyncio.to_thread(_google_synthesize, sentence)
+        else:
+            try:
+                mp3 = await asyncio.wait_for(
+                    _edge_synthesize(sentence), timeout=settings.TTS_TIMEOUT_SEC
+                )
+            except (asyncio.TimeoutError, OSError, edge_tts.exceptions.NoAudioReceived):
+                logger.warning("Edge TTS unavailable; using Google TTS fallback")
+                mp3 = await asyncio.to_thread(_google_synthesize, sentence)
+        pcm = await asyncio.to_thread(_decode_mp3, mp3)
+        for offset in range(0, len(pcm), PCM_FRAME_BYTES):
+            frame = pcm[offset: offset + PCM_FRAME_BYTES]
+            if len(frame) < PCM_FRAME_BYTES:
+                frame += bytes(PCM_FRAME_BYTES - len(frame))
+            await self.send_bytes(frame)
+            await asyncio.sleep(PCM_FRAME_MS / 1000)
+
+    async def speak_stream(self, queue: asyncio.Queue[str | None]) -> bool:
+        """Play complete clauses while the LLM continues producing later tokens."""
+        first = await queue.get()
+        if first is None:
+            return False
+        self.state = "SPEAKING"
+        await self.send_json({"type": "tts", "state": "start"})
+        try:
+            sentence: str | None = first
+            while sentence is not None:
+                await self._speak_sentence(sentence)
+                sentence = await queue.get()
+        finally:
+            await self.send_json({"type": "tts", "state": "stop"})
+        return True
+
     async def speak(self, text: str) -> None:
         self.state = "SPEAKING"
         await self.send_json({"type": "tts", "state": "start"})
         try:
-            sentences = [part.strip() for part in re.split(r"(?<=[.!?…])\s+|(?<=[。！？])", text) if part.strip()]
-            for sentence in sentences or [text]:
-                await self.send_json({"type": "tts", "state": "sentence_start", "text": sentence})
-                if settings.TTS_PROVIDER == "google":
-                    mp3 = await asyncio.to_thread(_google_synthesize, sentence)
-                else:
-                    try:
-                        mp3 = await asyncio.wait_for(
-                            _edge_synthesize(sentence), timeout=settings.TTS_TIMEOUT_SEC
-                        )
-                    except (asyncio.TimeoutError, OSError, edge_tts.exceptions.NoAudioReceived):
-                        logger.warning("Edge TTS unavailable; using Google TTS fallback")
-                        mp3 = await asyncio.to_thread(_google_synthesize, sentence)
-                pcm = await asyncio.to_thread(_decode_mp3, mp3)
-                for offset in range(0, len(pcm), PCM_FRAME_BYTES):
-                    frame = pcm[offset: offset + PCM_FRAME_BYTES]
-                    if len(frame) < PCM_FRAME_BYTES:
-                        frame += bytes(PCM_FRAME_BYTES - len(frame))
-                    await self.send_bytes(frame)
-                    await asyncio.sleep(PCM_FRAME_MS / 1000)
+            normalized = normalize_tts_text(text)
+            sentences = [
+                part.strip() for part in re.split(r"(?<=[.!?])\s+|(?<=[。！？])", normalized)
+                if part.strip()
+            ]
+            for sentence in sentences or [normalized]:
+                await self._speak_sentence(sentence)
         finally:
             await self.send_json({"type": "tts", "state": "stop"})
 
