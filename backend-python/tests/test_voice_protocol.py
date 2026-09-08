@@ -80,6 +80,7 @@ class VoiceProtocolTests(unittest.TestCase):
         self.assertTrue(matches_device_wake_signature("how you doing", "huy động"))
         self.assertTrue(matches_device_wake_signature("how you doing", "hình động"))
         self.assertTrue(matches_device_wake_signature("how you doing", "Hello"))
+        self.assertTrue(matches_device_wake_signature("Hazel", "heyzo"))
         self.assertTrue(matches_device_wake_signature("are you down", "Huy Tâm"))
         self.assertFalse(matches_device_wake_signature("how you doing", "xin chào"))
         self.assertFalse(matches_device_wake_signature("good morning", "huy động"))

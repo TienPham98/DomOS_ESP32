@@ -291,6 +291,8 @@ def matches_device_wake_signature(english: str, vietnamese: str) -> bool:
         ("how you doing", "hanh dong"),
         ("how you doing", "hello"),
         ("are you down", "huy tam"),
+        # Google vi/en results for a clean synthesized "Hey Dom" sample.
+        ("hazel", "heyzo"),
     }
     return (en, vi) in learned_pairs
 

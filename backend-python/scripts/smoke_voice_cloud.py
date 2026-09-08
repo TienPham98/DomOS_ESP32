@@ -26,7 +26,11 @@ async def main() -> None:
         "DOMOS_SMOKE_BASE_URL",
         "http://127.0.0.1:8000",
     )
-    phrase = os.getenv("DOMOS_SMOKE_PHRASE", "Bạn là ai")
+    mode = os.getenv("DOMOS_SMOKE_MODE", "command").strip().lower()
+    phrase = os.getenv(
+        "DOMOS_SMOKE_PHRASE",
+        "Hey Dom" if mode == "wake" else "Bạn là ai",
+    )
     mp3 = await asyncio.to_thread(_google_synthesize, phrase)
     pcm = await asyncio.to_thread(_decode_mp3, mp3)
     headers = {"Device-Id": "runtime-e2e", "Protocol-Version": "3"}
@@ -50,7 +54,8 @@ async def main() -> None:
         }))
         await asyncio.wait_for(websocket.recv(), timeout=10)
         await asyncio.wait_for(websocket.recv(), timeout=10)
-        await websocket.send(json.dumps({"type": "listen", "state": "start"}))
+        if mode != "wake":
+            await websocket.send(json.dumps({"type": "listen", "state": "start"}))
 
         for offset in range(0, len(pcm), PCM_FRAME_BYTES):
             frame = pcm[offset:offset + PCM_FRAME_BYTES]
@@ -69,13 +74,24 @@ async def main() -> None:
             message = json.loads(item)
             state = message.get("state", message.get("emotion", ""))
             states.append(f"{message.get('type', '')}:{state}")
+            if (
+                mode == "wake"
+                and message.get("type") == "listen"
+                and message.get("state") == "start"
+                and message.get("source") == "wake_word"
+            ):
+                break
             if message.get("type") == "tts" and message.get("state") == "stop":
                 break
 
-    assert "tts:start" in states
-    assert binary_frames > 0
+    if mode == "wake":
+        assert "listen:start" in states
+    else:
+        assert "tts:start" in states
+        assert binary_frames > 0
     print(json.dumps({
         "completed": True,
+        "mode": mode,
         "states": states,
         "binary_audio_frames": binary_frames,
     }))
