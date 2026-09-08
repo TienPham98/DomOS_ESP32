@@ -87,6 +87,8 @@ class GatewayApiTests(unittest.TestCase):
         self.assertEqual(payload["memory"], "sqlite")
         self.assertIn("stt_provider", payload)
         self.assertIn("tts_provider", payload)
+        self.assertTrue(payload["llm_streaming"])
+        self.assertEqual(payload["web_search_provider"], settings.WEB_SEARCH_PROVIDER)
 
     def test_device_status_requires_control_token(self):
         with patch.object(main.settings, "BOARD_CONTROL_AUTH_TOKEN", "control-secret"):
