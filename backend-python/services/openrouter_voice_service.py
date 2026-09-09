@@ -392,7 +392,6 @@ class VoiceSession:
         self.provider_retry_after: dict[str, float] = {}
         self.last_llm_provider = "pending"
         self.last_llm_model = "pending"
-        self.last_heartbeat_sent = time.monotonic()
 
     def provider_ready(self, provider: str) -> bool:
         return time.monotonic() >= self.provider_retry_after.get(provider, 0.0)
@@ -1490,6 +1489,7 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
     device_id = websocket.headers.get("device-id", "ES3C28P")
     session_id = str(uuid.uuid4())
     session = VoiceSession(websocket, device_id, session_id)
+    heartbeat_task: asyncio.Task[None] | None = None
     try:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
         hello = json.loads(raw)
@@ -1501,11 +1501,21 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
             "features": {"mcp": True, "vad": True, "emotions": True, "tts_streaming": True},
         })
         await session.set_wake_word()
+        heartbeat_task = asyncio.create_task(
+            voice_heartbeat_loop(session), name=f"voice-heartbeat-{session_id}"
+        )
         logger.info("Cloud voice connected device=%s provider=%s session=%s", device_id, primary_llm_provider(), session_id)
         while True:
-            raw_message = await receive_voice_message(session)
-            if raw_message is None:
-                continue
+            receive_task = asyncio.create_task(websocket.receive())
+            done, _ = await asyncio.wait(
+                (receive_task, heartbeat_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat_task in done:
+                receive_task.cancel()
+                await asyncio.gather(receive_task, return_exceptions=True)
+                await heartbeat_task
+                raise RuntimeError("Voice heartbeat task stopped unexpectedly")
+            raw_message = receive_task.result()
             if raw_message.get("type") == "websocket.disconnect":
                 break
             if raw_message.get("bytes") is not None:
@@ -1537,6 +1547,9 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
     except Exception:
         logger.exception("Voice session failed device=%s", device_id)
     finally:
+        if heartbeat_task and not heartbeat_task.done():
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
         if session.pipeline_task and not session.pipeline_task.done():
             session.pipeline_task.cancel()
         if session.activation_timeout_task and not session.activation_timeout_task.done():
@@ -1548,28 +1561,18 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         logger.info("Cloud voice disconnected device=%s", device_id)
 
 
-async def receive_voice_message(
+async def voice_heartbeat_loop(
     session: VoiceSession,
-    timeout_sec: float | None = None,
-) -> dict[str, Any] | None:
-    """Receive one device frame and emit heartbeats on a monotonic schedule.
+    interval_sec: float | None = None,
+) -> None:
+    """Send application heartbeats without cancelling the ASGI receive call.
 
-    The schedule is independent of incoming PCM, which is continuous while wake
-    detection is armed. Cloud proxies can expire otherwise healthy WebSockets
-    even when protocol-level ping frames are enabled. An application frame also
-    makes a dead peer fail on the next write so the registry cannot retain a
-    stale device session.
+    Incoming PCM is continuous while wake detection is armed, so heartbeat
+    scheduling must be independent of the receive loop. A failed write bubbles
+    into the session handler and removes the stale registry entry immediately.
     """
-    interval = timeout_sec if timeout_sec is not None else settings.VOICE_HEARTBEAT_INTERVAL_SEC
-    interval = max(float(interval), 1.0)
-    remaining = max(interval - (time.monotonic() - session.last_heartbeat_sent), 0.001)
-    try:
-        message = await asyncio.wait_for(session.websocket.receive(), timeout=remaining)
-    except asyncio.TimeoutError:
+    interval = interval_sec if interval_sec is not None else settings.VOICE_HEARTBEAT_INTERVAL_SEC
+    interval = max(float(interval), 0.01)
+    while True:
+        await asyncio.sleep(interval)
         await session.send_json({"type": "ping", "timestamp": int(time.time())})
-        session.last_heartbeat_sent = time.monotonic()
-        return None
-    if time.monotonic() - session.last_heartbeat_sent >= interval:
-        await session.send_json({"type": "ping", "timestamp": int(time.time())})
-        session.last_heartbeat_sent = time.monotonic()
-    return message
