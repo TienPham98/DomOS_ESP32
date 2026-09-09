@@ -251,6 +251,7 @@ WAKE_WORD -> LISTENING -> PROCESSING -> SPEAKING -> WAKE_WORD
 - Wake hard limit: 3 giây; câu lệnh hard limit: 20 giây.
 - Mỗi frame: 60 ms, 1920 byte.
 - Sau wake, nếu không có lệnh trong 30 giây, gateway trở lại `WAKE_WORD`.
+- Mỗi device chỉ có một session hoạt động; session cũ bị thay thế ngay khi ESP32 reconnect để tránh MCP gửi vào kết nối ma.
 
 Không chấp nhận transcript rỗng làm wake. Khi test lặp, sau một wake thành công phải đợi `Listening` và nói lệnh; cụm tiếp theo không còn là một wake event.
 

@@ -36,12 +36,16 @@ class FakeWebSocket:
     def __init__(self) -> None:
         self.text_messages: list[dict] = []
         self.binary_messages: list[bytes] = []
+        self.close_events: list[tuple[int, str]] = []
 
     async def send_text(self, payload: str) -> None:
         self.text_messages.append(json.loads(payload))
 
     async def send_bytes(self, payload: bytes) -> None:
         self.binary_messages.append(payload)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.close_events.append((code, reason))
 
 
 class DeviceCommandRetryTests(unittest.IsolatedAsyncioTestCase):
@@ -512,6 +516,19 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         await registry.add(fresh)
 
         self.assertFalse(fresh.provider_ready("openai-stt-quota"))
+
+    async def test_registry_replaces_stale_session_for_same_device(self):
+        registry = VoiceRegistry()
+        stale_socket = FakeWebSocket()
+        stale = VoiceSession(stale_socket, "board-a", "session-stale")
+        fresh = VoiceSession(FakeWebSocket(), "BOARD-A", "session-fresh")
+
+        await registry.add(stale)
+        await registry.add(fresh)
+
+        self.assertEqual(registry.count, 1)
+        self.assertIs(await registry.get("board-a"), fresh)
+        self.assertEqual(stale_socket.close_events, [(1012, "Superseded by reconnect")])
 
     async def test_abort_stops_tts_and_returns_to_wake_mode(self):
         websocket = FakeWebSocket()

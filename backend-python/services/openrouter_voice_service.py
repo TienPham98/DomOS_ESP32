@@ -93,6 +93,7 @@ class VoiceRegistry:
         return len(self.sessions)
 
     async def add(self, session: VoiceSession) -> None:
+        stale_sessions: list[VoiceSession] = []
         async with self.lock:
             # Northflank may rotate a WebSocket connection while the process
             # remains alive. Preserve provider quota cooldowns across that
@@ -100,7 +101,23 @@ class VoiceRegistry:
             session.provider_retry_after = self.provider_backoff.setdefault(
                 session.device_id.casefold(), {}
             )
+            wanted = session.device_id.casefold()
+            for session_id, active in tuple(self.sessions.items()):
+                if session_id != session.session_id and active.device_id.casefold() == wanted:
+                    stale_sessions.append(active)
+                    self.sessions.pop(session_id, None)
             self.sessions[session.session_id] = session
+
+        # A proxy reset can leave the old ASGI receive pending even though the
+        # ESP32 has already opened a replacement socket. Remove it from routing
+        # immediately and wake any dashboard request so it can retry the new
+        # session instead of waiting on a ghost connection.
+        for stale in stale_sessions:
+            for future in stale.pending_mcp.values():
+                if not future.done():
+                    future.cancel()
+            with contextlib.suppress(Exception):
+                await stale.websocket.close(code=1012, reason="Superseded by reconnect")
 
     async def remove(self, session_id: str) -> None:
         async with self.lock:
