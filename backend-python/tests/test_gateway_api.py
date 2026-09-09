@@ -65,6 +65,11 @@ class DeviceCommandRetryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GatewayApiTests(unittest.TestCase):
+    def test_cloud_server_disables_incompatible_websocket_ping(self):
+        entrypoint = Path("cloud-entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn("--ws websockets-sansio", entrypoint)
+        self.assertIn("--ws-ping-interval 0", entrypoint)
+
     def test_external_service_configuration_has_no_code_defaults(self):
         env_only_fields = (
             "HOST",

@@ -23,7 +23,12 @@ shutdown() {
 }
 trap shutdown INT TERM EXIT
 
-python -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" &
+# ESP-IDF's websocket client keeps the TCP connection alive but does not
+# reliably answer Uvicorn's protocol-level ping through the Northflank proxy.
+# The default 20 s ping plus 20 s timeout therefore reset a healthy voice
+# stream every 40 s. DomOS has its own JSON heartbeat, so disable that ping.
+python -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" \
+    --ws websockets-sansio --ws-ping-interval 0 &
 gateway_pid=$!
 
 while kill -0 "$broker_pid" 2>/dev/null && kill -0 "$gateway_pid" 2>/dev/null; do
