@@ -1460,11 +1460,10 @@ class VoiceSession:
         if future and not future.done():
             future.set_result(payload.get("result") or {"error": payload.get("error"), "isError": True})
 
-    async def _speak_sentence(self, sentence: str) -> None:
+    async def _synthesize_sentence_pcm(self, sentence: str) -> tuple[str, bytes] | None:
         sentence = normalize_tts_text(sentence)
         if not sentence:
-            return
-        await self.send_json({"type": "tts", "state": "sentence_start", "text": sentence})
+            return None
         if settings.TTS_PROVIDER == "google":
             mp3 = await asyncio.to_thread(_google_synthesize, sentence)
         else:
@@ -1476,6 +1475,10 @@ class VoiceSession:
                 logger.warning("Edge TTS unavailable; using Google TTS fallback")
                 mp3 = await asyncio.to_thread(_google_synthesize, sentence)
         pcm = await asyncio.to_thread(_decode_mp3, mp3)
+        return sentence, pcm
+
+    async def _send_synthesized_sentence(self, sentence: str, pcm: bytes) -> None:
+        await self.send_json({"type": "tts", "state": "sentence_start", "text": sentence})
         frame_count = max(1, math.ceil(len(pcm) / PCM_FRAME_BYTES))
         stream_started_at = time.monotonic()
         for frame_index, offset in enumerate(range(0, len(pcm), PCM_FRAME_BYTES)):
@@ -1504,19 +1507,50 @@ class VoiceSession:
         if delay > 0:
             await asyncio.sleep(delay)
 
+    async def _speak_sentence(self, sentence: str) -> None:
+        synthesized = await self._synthesize_sentence_pcm(sentence)
+        if synthesized is not None:
+            await self._send_synthesized_sentence(*synthesized)
+
     async def speak_stream(self, queue: asyncio.Queue[str | None]) -> bool:
-        """Play complete clauses while the LLM continues producing later tokens."""
-        first = await queue.get()
+        """Synthesize the next clause while the current clause is playing."""
+        synthesized_queue: asyncio.Queue[tuple[str, bytes] | Exception | None] = asyncio.Queue(
+            maxsize=2
+        )
+
+        async def synthesize_ahead() -> None:
+            try:
+                while True:
+                    sentence = await queue.get()
+                    if sentence is None:
+                        await synthesized_queue.put(None)
+                        return
+                    synthesized = await self._synthesize_sentence_pcm(sentence)
+                    if synthesized is not None:
+                        await synthesized_queue.put(synthesized)
+            except Exception as exc:
+                await synthesized_queue.put(exc)
+
+        synthesize_task = asyncio.create_task(synthesize_ahead())
+        first = await synthesized_queue.get()
         if first is None:
+            await synthesize_task
             return False
+        if isinstance(first, Exception):
+            raise first
         self.state = "SPEAKING"
         await self.send_json({"type": "tts", "state": "start"})
         try:
-            sentence: str | None = first
-            while sentence is not None:
-                await self._speak_sentence(sentence)
-                sentence = await queue.get()
+            synthesized: tuple[str, bytes] | Exception | None = first
+            while synthesized is not None:
+                if isinstance(synthesized, Exception):
+                    raise synthesized
+                await self._send_synthesized_sentence(*synthesized)
+                synthesized = await synthesized_queue.get()
         finally:
+            if not synthesize_task.done():
+                synthesize_task.cancel()
+            await asyncio.gather(synthesize_task, return_exceptions=True)
             await self.send_json({"type": "tts", "state": "stop"})
         return True
 

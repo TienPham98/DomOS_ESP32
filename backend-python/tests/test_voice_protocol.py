@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from array import array
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from services.conversation_store import ConversationStore
 from services.openrouter_voice_service import LISTENING_VAD_MAX_THRESHOLD, PCM_FRAME_BYTES, TTS_JITTER_BUFFER_FRAMES, TTS_STOP_GRACE_FRAMES, VAD_ENERGY_THRESHOLD, VAD_MAX_PAUSE_SEC, VAD_PRE_ROLL_FRAMES, VAD_SILENCE_FRAMES, WAKE_VAD_MAX_THRESHOLD, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, split_wake_word, validate_dom_hello, voice_heartbeat_loop
@@ -158,6 +159,33 @@ class VoiceHeartbeatTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(json.loads(websocket.sent[0])["type"], "ping")
         self.assertEqual(json.loads(websocket.sent[0])["session_id"], "session")
+
+
+class TtsStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_next_clause_is_synthesized_while_current_audio_plays(self):
+        session = VoiceSession(None, "board", "session")
+        session.send_json = AsyncMock()
+        second_synthesis_started = asyncio.Event()
+
+        async def synthesize(sentence: str):
+            if sentence == "second":
+                second_synthesis_started.set()
+            return sentence, bytes(PCM_FRAME_BYTES)
+
+        async def play(sentence: str, pcm: bytes):
+            if sentence == "first":
+                await asyncio.wait_for(second_synthesis_started.wait(), timeout=0.1)
+
+        session._synthesize_sentence_pcm = AsyncMock(side_effect=synthesize)
+        session._send_synthesized_sentence = AsyncMock(side_effect=play)
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        await queue.put("first")
+        await queue.put("second")
+        await queue.put(None)
+
+        self.assertTrue(await session.speak_stream(queue))
+        self.assertEqual(session._synthesize_sentence_pcm.await_count, 2)
+        self.assertEqual(session._send_synthesized_sentence.await_count, 2)
 
 
 if __name__ == "__main__":
