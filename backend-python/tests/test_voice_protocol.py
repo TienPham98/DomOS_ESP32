@@ -6,7 +6,7 @@ from array import array
 from pathlib import Path
 
 from services.conversation_store import ConversationStore
-from services.openrouter_voice_service import PCM_FRAME_BYTES, VAD_ENERGY_THRESHOLD, VAD_SILENCE_FRAMES, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, split_wake_word, validate_dom_hello, voice_heartbeat_loop
+from services.openrouter_voice_service import PCM_FRAME_BYTES, VAD_ENERGY_THRESHOLD, VAD_PRE_ROLL_FRAMES, VAD_SILENCE_FRAMES, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, split_wake_word, validate_dom_hello, voice_heartbeat_loop
 from services.text_normalization import plain_speech_text
 
 
@@ -37,6 +37,7 @@ class VoiceProtocolTests(unittest.TestCase):
     def test_vad_constants_match_sixty_millisecond_frames(self):
         self.assertEqual(PCM_FRAME_BYTES, 1920)
         self.assertEqual(VAD_ENERGY_THRESHOLD, 180)
+        self.assertEqual(VAD_PRE_ROLL_FRAMES, 24)
         self.assertEqual(VAD_SILENCE_FRAMES, 9)
         self.assertEqual(pcm_rms(bytes(PCM_FRAME_BYTES)), 0)
 

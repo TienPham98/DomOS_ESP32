@@ -449,6 +449,35 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.speech_started)
         session.start_pipeline.assert_awaited_once()
 
+    async def test_vad_preserves_soft_sentence_start_in_pre_roll(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session.state = "LISTENING"
+        quiet = bytes(PCM_FRAME_BYTES)
+        soft = array("h", ([-100, 100] * (PCM_FRAME_BYTES // 4))).tobytes()
+        loud = array("h", ([-1200, 1200] * (PCM_FRAME_BYTES // 4))).tobytes()
+
+        for _ in range(5):
+            await session.consume_audio(quiet)
+        for _ in range(17):
+            await session.consume_audio(soft)
+        for _ in range(2):
+            await session.consume_audio(loud)
+
+        self.assertTrue(session.speech_started)
+        self.assertEqual(len(session.audio), 24 * PCM_FRAME_BYTES)
+
+    async def test_registry_preserves_provider_backoff_across_reconnect(self):
+        registry = VoiceRegistry()
+        stale = VoiceSession(FakeWebSocket(), "board-a", "session-stale")
+        fresh = VoiceSession(FakeWebSocket(), "board-a", "session-fresh")
+
+        await registry.add(stale)
+        stale.defer_provider("openai-stt-quota")
+        await registry.remove(stale.session_id)
+        await registry.add(fresh)
+
+        self.assertFalse(fresh.provider_ready("openai-stt-quota"))
+
     async def test_abort_stops_tts_and_returns_to_wake_mode(self):
         websocket = FakeWebSocket()
         session = VoiceSession(websocket, "board", "session")

@@ -60,6 +60,7 @@ VAD_MAX_FRAMES = 20_000 // PCM_FRAME_MS
 WAKE_MAX_FRAMES = 3_000 // PCM_FRAME_MS
 VAD_CALIBRATION_FRAMES = 5
 VAD_START_FRAMES = 2
+VAD_PRE_ROLL_FRAMES = 24  # 1.44 s; preserves softly spoken Vietnamese sentence starts
 VAD_NOISE_MULTIPLIER = 1.8
 VAD_NOISE_MARGIN = 40
 # Single-word "Hey" / "Dom" can be shorter than the old 300 ms minimum.
@@ -81,6 +82,7 @@ TOOLS = [
 @dataclass
 class VoiceRegistry:
     sessions: dict[str, VoiceSession] = field(default_factory=dict)
+    provider_backoff: dict[str, dict[str, float]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -89,6 +91,12 @@ class VoiceRegistry:
 
     async def add(self, session: VoiceSession) -> None:
         async with self.lock:
+            # Northflank may rotate a WebSocket connection while the process
+            # remains alive. Preserve provider quota cooldowns across that
+            # reconnect so every new session does not repeat a slow 429 call.
+            session.provider_retry_after = self.provider_backoff.setdefault(
+                session.device_id.casefold(), {}
+            )
             self.sessions[session.session_id] = session
 
     async def remove(self, session_id: str) -> None:
@@ -373,7 +381,7 @@ class VoiceSession:
         self.session_id = session_id
         self.state = "IDLE"
         self.send_lock = asyncio.Lock()
-        self.pre_roll: deque[bytes] = deque(maxlen=8)
+        self.pre_roll: deque[bytes] = deque(maxlen=VAD_PRE_ROLL_FRAMES)
         self.noise_samples: deque[int] = deque(maxlen=50)
         self.start_candidate_frames = 0
         self.capture_threshold = VAD_ENERGY_THRESHOLD
