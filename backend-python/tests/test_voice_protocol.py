@@ -172,7 +172,7 @@ class TtsStreamingTests(unittest.IsolatedAsyncioTestCase):
                 second_synthesis_started.set()
             return sentence, bytes(PCM_FRAME_BYTES)
 
-        async def play(sentence: str, pcm: bytes):
+        async def play(sentence: str, pcm: bytes, previous_deadline=None):
             if sentence == "first":
                 await asyncio.wait_for(second_synthesis_started.wait(), timeout=0.1)
 

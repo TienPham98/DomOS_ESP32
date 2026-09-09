@@ -1477,17 +1477,31 @@ class VoiceSession:
         pcm = await asyncio.to_thread(_decode_mp3, mp3)
         return sentence, pcm
 
-    async def _send_synthesized_sentence(self, sentence: str, pcm: bytes) -> None:
+    async def _send_synthesized_sentence(
+        self,
+        sentence: str,
+        pcm: bytes,
+        previous_playback_deadline: float | None = None,
+    ) -> float:
         await self.send_json({"type": "tts", "state": "sentence_start", "text": sentence})
         frame_count = max(1, math.ceil(len(pcm) / PCM_FRAME_BYTES))
         stream_started_at = time.monotonic()
+        # Only the first clause (or a clause after a real synthesis gap) needs
+        # a burst. Consecutive clauses already have audio queued; bursting each
+        # one would eventually overflow the finite ESP32 queue.
+        prebuffer_frames = (
+            1
+            if previous_playback_deadline is not None
+            and stream_started_at < previous_playback_deadline
+            else TTS_JITTER_BUFFER_FRAMES
+        )
         for frame_index, offset in enumerate(range(0, len(pcm), PCM_FRAME_BYTES)):
             # Prime the device queue in a short burst, then pace against a
             # monotonic clock.  A deadline-based loop does not accumulate the
             # event-loop drift that repeated sleep(0.06) calls introduce.
             send_offset = max(
                 0.0,
-                (frame_index - TTS_JITTER_BUFFER_FRAMES + 1) * PCM_FRAME_MS / 1000,
+                (frame_index - prebuffer_frames + 1) * PCM_FRAME_MS / 1000,
             )
             delay = stream_started_at + send_offset - time.monotonic()
             if delay > 0:
@@ -1497,60 +1511,86 @@ class VoiceSession:
                 frame += bytes(PCM_FRAME_BYTES - len(frame))
             await self.send_bytes(frame)
 
-        # Do not send tts.stop while the pre-buffered tail is still playing.
-        # The firmware intentionally flushes on stop/abort, so an early stop
-        # clips the sentence and sounds like crackling on a small speaker.
-        playback_deadline = stream_started_at + (
-            frame_count + TTS_STOP_GRACE_FRAMES
-        ) * PCM_FRAME_MS / 1000
-        delay = playback_deadline - time.monotonic()
+        playback_starts_at = max(previous_playback_deadline or 0.0, stream_started_at)
+        return playback_starts_at + frame_count * PCM_FRAME_MS / 1000
+
+    async def _wait_for_tts_tail(self, playback_deadline: float | None) -> None:
+        if playback_deadline is None:
+            return
+        # Wait only after the final clause. Waiting after every clause drains
+        # the jitter queue and inserts an audible hole between sentences.
+        stop_deadline = playback_deadline + TTS_STOP_GRACE_FRAMES * PCM_FRAME_MS / 1000
+        delay = stop_deadline - time.monotonic()
         if delay > 0:
             await asyncio.sleep(delay)
 
-    async def _speak_sentence(self, sentence: str) -> None:
+    async def _speak_sentence(
+        self, sentence: str, previous_playback_deadline: float | None = None
+    ) -> float | None:
         synthesized = await self._synthesize_sentence_pcm(sentence)
         if synthesized is not None:
-            await self._send_synthesized_sentence(*synthesized)
+            return await self._send_synthesized_sentence(
+                *synthesized, previous_playback_deadline
+            )
+        return None
 
     async def speak_stream(self, queue: asyncio.Queue[str | None]) -> bool:
         """Synthesize the next clause while the current clause is playing."""
-        synthesized_queue: asyncio.Queue[tuple[str, bytes] | Exception | None] = asyncio.Queue(
-            maxsize=2
+        synthesis_jobs: asyncio.Queue[asyncio.Task[tuple[str, bytes] | None] | None] = (
+            asyncio.Queue(maxsize=2)
         )
+        synthesis_slots = asyncio.Semaphore(2)
+        active_syntheses: set[asyncio.Task[tuple[str, bytes] | None]] = set()
+
+        async def synthesize_with_limit(sentence: str) -> tuple[str, bytes] | None:
+            async with synthesis_slots:
+                return await self._synthesize_sentence_pcm(sentence)
 
         async def synthesize_ahead() -> None:
-            try:
-                while True:
-                    sentence = await queue.get()
-                    if sentence is None:
-                        await synthesized_queue.put(None)
-                        return
-                    synthesized = await self._synthesize_sentence_pcm(sentence)
-                    if synthesized is not None:
-                        await synthesized_queue.put(synthesized)
-            except Exception as exc:
-                await synthesized_queue.put(exc)
+            while True:
+                sentence = await queue.get()
+                if sentence is None:
+                    await synthesis_jobs.put(None)
+                    return
+                # Schedule independently from playback. This lets Google/Edge
+                # synthesize clause two while clause one is still being
+                # generated or played, while the semaphore bounds provider
+                # concurrency and preserves queue order.
+                job = asyncio.create_task(synthesize_with_limit(sentence))
+                active_syntheses.add(job)
+                job.add_done_callback(active_syntheses.discard)
+                await synthesis_jobs.put(job)
 
         synthesize_task = asyncio.create_task(synthesize_ahead())
-        first = await synthesized_queue.get()
-        if first is None:
+        first_job = await synthesis_jobs.get()
+        if first_job is None:
             await synthesize_task
             return False
-        if isinstance(first, Exception):
-            raise first
+        first = await first_job
         self.state = "SPEAKING"
         await self.send_json({"type": "tts", "state": "start"})
         try:
-            synthesized: tuple[str, bytes] | Exception | None = first
-            while synthesized is not None:
-                if isinstance(synthesized, Exception):
-                    raise synthesized
-                await self._send_synthesized_sentence(*synthesized)
-                synthesized = await synthesized_queue.get()
+            synthesized = first
+            playback_deadline: float | None = None
+            while True:
+                if synthesized is not None:
+                    playback_deadline = await self._send_synthesized_sentence(
+                        *synthesized, playback_deadline
+                    )
+                next_job = await synthesis_jobs.get()
+                if next_job is None:
+                    break
+                synthesized = await next_job
+            await self._wait_for_tts_tail(playback_deadline)
         finally:
             if not synthesize_task.done():
                 synthesize_task.cancel()
             await asyncio.gather(synthesize_task, return_exceptions=True)
+            pending_syntheses = tuple(active_syntheses)
+            for job in pending_syntheses:
+                job.cancel()
+            if pending_syntheses:
+                await asyncio.gather(*pending_syntheses, return_exceptions=True)
             await self.send_json({"type": "tts", "state": "stop"})
         return True
 
@@ -1563,8 +1603,10 @@ class VoiceSession:
                 part.strip() for part in re.split(r"(?<=[.!?])\s+|(?<=[。！？])", normalized)
                 if part.strip()
             ]
+            playback_deadline: float | None = None
             for sentence in sentences or [normalized]:
-                await self._speak_sentence(sentence)
+                playback_deadline = await self._speak_sentence(sentence, playback_deadline)
+            await self._wait_for_tts_tail(playback_deadline)
         finally:
             await self.send_json({"type": "tts", "state": "stop"})
 
