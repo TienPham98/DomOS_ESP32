@@ -150,6 +150,26 @@ class VoiceHeartbeatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(websocket.sent[0])["type"], "ping")
         self.assertEqual(json.loads(websocket.sent[0])["session_id"], "session")
 
+    async def test_continuous_audio_cannot_starve_heartbeat(self):
+        class BusyWebSocket:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            async def receive(self):
+                return {"type": "websocket.receive", "bytes": bytes(1920)}
+
+            async def send_text(self, value: str):
+                self.sent.append(value)
+
+        websocket = BusyWebSocket()
+        session = VoiceSession(websocket, "board", "session")
+        session.last_heartbeat_sent = 0
+
+        message = await receive_voice_message(session, timeout_sec=1)
+
+        self.assertEqual(message["bytes"], bytes(1920))
+        self.assertEqual(json.loads(websocket.sent[0])["type"], "ping")
+
 
 if __name__ == "__main__":
     unittest.main()

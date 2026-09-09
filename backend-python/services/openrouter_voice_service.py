@@ -392,6 +392,7 @@ class VoiceSession:
         self.provider_retry_after: dict[str, float] = {}
         self.last_llm_provider = "pending"
         self.last_llm_model = "pending"
+        self.last_heartbeat_sent = time.monotonic()
 
     def provider_ready(self, provider: str) -> bool:
         return time.monotonic() >= self.provider_retry_after.get(provider, 0.0)
@@ -1551,16 +1552,24 @@ async def receive_voice_message(
     session: VoiceSession,
     timeout_sec: float | None = None,
 ) -> dict[str, Any] | None:
-    """Receive one device frame, emitting an application heartbeat while idle.
+    """Receive one device frame and emit heartbeats on a monotonic schedule.
 
-    Cloud proxies can expire otherwise healthy WebSockets even when protocol-level
-    ping frames are enabled.  An application frame also makes a dead peer fail on
-    the next write so the registry cannot retain a stale device session.
+    The schedule is independent of incoming PCM, which is continuous while wake
+    detection is armed. Cloud proxies can expire otherwise healthy WebSockets
+    even when protocol-level ping frames are enabled. An application frame also
+    makes a dead peer fail on the next write so the registry cannot retain a
+    stale device session.
     """
     interval = timeout_sec if timeout_sec is not None else settings.VOICE_HEARTBEAT_INTERVAL_SEC
     interval = max(float(interval), 1.0)
+    remaining = max(interval - (time.monotonic() - session.last_heartbeat_sent), 0.001)
     try:
-        return await asyncio.wait_for(session.websocket.receive(), timeout=interval)
+        message = await asyncio.wait_for(session.websocket.receive(), timeout=remaining)
     except asyncio.TimeoutError:
         await session.send_json({"type": "ping", "timestamp": int(time.time())})
+        session.last_heartbeat_sent = time.monotonic()
         return None
+    if time.monotonic() - session.last_heartbeat_sent >= interval:
+        await session.send_json({"type": "ping", "timestamp": int(time.time())})
+        session.last_heartbeat_sent = time.monotonic()
+    return message
