@@ -248,6 +248,7 @@ WAKE_WORD -> LISTENING -> PROCESSING -> SPEAKING -> WAKE_WORD
 - Bộ đệm trước VAD giữ 24 frame, tương đương 1,44 giây, để không mất phần đầu câu nói nhỏ.
 - Nếu nhiễu nền không xuống dưới ngưỡng silence, câu vẫn được chốt sau 2 giây không có frame giọng nói rõ.
 - Ngưỡng thích nghi được chặn ở 450 khi chạm để nói và 700 khi chờ wake word, tránh học nhầm giọng nhỏ thành nhiễu sau thời gian chạy dài.
+- Sau khi chạm hoặc wake word được chấp nhận, PCM được lưu ngay từ frame đầu; VAD chỉ chốt cuối câu nên không cắt mất các từ mở đầu nói nhỏ.
 - Wake hard limit: 3 giây; câu lệnh hard limit: 20 giây.
 - Mỗi frame: 60 ms, 1920 byte.
 - Sau wake, nếu không có lệnh trong 30 giây, gateway trở lại `WAKE_WORD`.

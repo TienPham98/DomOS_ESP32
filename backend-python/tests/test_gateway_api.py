@@ -432,6 +432,7 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
 
         await session.set_listening(notify_board=True)
         self.assertEqual(session.state, "LISTENING")
+        self.assertTrue(session.speech_started)
         self.assertEqual(websocket.text_messages[0]["state"], "start")
         self.assertEqual(websocket.text_messages[1]["emotion"], "listening")
 
@@ -487,6 +488,18 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(session.speech_started)
         self.assertEqual(session.capture_threshold, 450)
+
+    async def test_explicit_listening_captures_audio_without_vad_onset_wait(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        await session.set_listening()
+        quiet_word_start = array(
+            "h", ([-100, 100] * (PCM_FRAME_BYTES // 4))
+        ).tobytes()
+
+        await session.consume_audio(quiet_word_start)
+
+        self.assertEqual(bytes(session.audio), quiet_word_start)
+        self.assertEqual(session.speech_frames, 0)
 
     async def test_vad_ends_after_two_seconds_without_strong_voice(self):
         session = VoiceSession(FakeWebSocket(), "board", "session")

@@ -479,6 +479,12 @@ class VoiceSession:
             self.activation_timeout_task.cancel()
         self.state = "LISTENING"
         self.reset_capture()
+        # A tap or accepted wake word is an explicit start-of-utterance signal.
+        # Capture from this point instead of waiting for VAD onset, which can
+        # otherwise lose quiet Vietnamese words at the beginning of a command.
+        self.speech_started = True
+        self.speech_started_at = time.monotonic()
+        self.capture_threshold = VAD_ENERGY_THRESHOLD
         if notify_board:
             message = {"type": "listen", "state": "start"}
             if source is not None:
@@ -540,7 +546,7 @@ class VoiceSession:
         # still end after two seconds without a clearly voiced frame.
         strong_voice_threshold = max(
             self.capture_threshold,
-            min(round(self.max_energy * 0.35), round(self.capture_threshold * 1.5)),
+            min(round(self.max_energy * 0.65), round(self.capture_threshold * 1.5)),
         )
         if energy >= strong_voice_threshold:
             self.last_strong_voice_at = now
