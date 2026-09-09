@@ -36,6 +36,10 @@ bool WsClient::Connect(const WsClientConfig &cfg)
     // which otherwise stops the client instead of entering its retry loop.
     ws_cfg.enable_close_reconnect = true;
     ws_cfg.network_timeout_ms   = 10000;
+    ws_cfg.keep_alive_enable    = true;
+    ws_cfg.keep_alive_idle      = 10;
+    ws_cfg.keep_alive_interval  = 5;
+    ws_cfg.keep_alive_count     = 3;
     if (strncmp(cfg.uri, "wss://", 6) == 0) {
         ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
@@ -116,6 +120,10 @@ bool WsClient::SendText(const char *json, size_t len)
         static_cast<esp_websocket_client_handle_t>(client_),
         json, static_cast<int>(len), pdMS_TO_TICKS(2000)
     );
+    if (ret <= 0) {
+        ESP_LOGW(TAG, "Text frame send failed (len=%u, ret=%d)",
+                 static_cast<unsigned>(len), ret);
+    }
     return ret > 0;
 }
 

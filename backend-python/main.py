@@ -86,11 +86,35 @@ async def _active_device(device_id: str | None = None):
 
 
 async def _call_device_tool(session, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    try:
-        result = await session.call_device_tool(name, arguments)
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail=f"Device command timed out: {name}") from exc
-    return _device_tool_payload(result)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(settings.DEVICE_COMMAND_RETRY_WINDOW_SEC, 5)
+    attempted_sessions: set[str] = set()
+    current = session
+    last_error: BaseException | None = None
+
+    while loop.time() < deadline:
+        if current.session_id not in attempted_sessions:
+            attempted_sessions.add(current.session_id)
+            try:
+                result = await current.call_device_tool(name, arguments)
+                return _device_tool_payload(result)
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                last_error = exc
+                logging.getLogger("domos.gateway").warning(
+                    "Device tool failed on session %s; waiting for reconnect: %s",
+                    current.session_id,
+                    name,
+                )
+
+        await asyncio.sleep(0.25)
+        replacement = await voice_registry.get(current.device_id)
+        if replacement is not None and replacement.session_id not in attempted_sessions:
+            current = replacement
+
+    raise HTTPException(
+        status_code=504,
+        detail=f"Device command timed out after reconnect: {name}",
+    ) from last_error
 
 
 async def _core_request(
@@ -132,7 +156,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="0.6.3",
+    version="0.6.4",
     description="Dom Voice Protocol v3 with OpenRouter and persistent memory",
     lifespan=lifespan,
 )
@@ -150,10 +174,11 @@ async def health_check() -> dict:
     return {
         "status": "online",
         "service": settings.APP_NAME,
-        "version": "0.6.3",
+        "version": "0.6.4",
         "provider": primary_llm_provider(),
         "local_ai": False,
         "active_sessions": voice_registry.count,
+        "device_command_retry_window_sec": settings.DEVICE_COMMAND_RETRY_WINDOW_SEC,
         "model": primary_llm_model(),
         "audio_model": settings.OPENROUTER_AUDIO_MODEL,
         "stt_provider": primary_stt_provider(),

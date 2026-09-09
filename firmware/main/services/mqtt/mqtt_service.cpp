@@ -20,9 +20,17 @@ bool MqttService::Start(EventBus *events)
         ESP_LOGE(TAG, "MQTT broker URI is not configured");
         return false;
     }
+    const bool secure_cloud = std::strncmp(uri, "mqtts://", 8) == 0 ||
+                              std::strncmp(uri, "wss://", 6) == 0;
+    if (secure_cloud &&
+        (CONFIG_DOMOS_MQTT_USERNAME[0] == '\0' || CONFIG_DOMOS_MQTT_PASSWORD[0] == '\0')) {
+        ESP_LOGW(TAG,
+                 "Secure MQTT credentials are missing; broker disabled to protect voice connectivity");
+        return false;
+    }
     esp_mqtt_client_config_t config{};
     config.broker.address.uri = uri;
-    if (std::strncmp(uri, "mqtts://", 8) == 0 || std::strncmp(uri, "wss://", 6) == 0) {
+    if (secure_cloud) {
         config.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
     }
     config.credentials.client_id = "domos-es3c28p-01";

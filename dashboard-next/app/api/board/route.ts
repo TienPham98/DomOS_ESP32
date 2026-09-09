@@ -24,7 +24,7 @@ async function proxy(path: string, init?: RequestInit): Promise<Response> {
       ...init,
       headers,
       cache: "no-store",
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(20_000),
     });
     const body = await upstream.text();
     return new Response(body, {

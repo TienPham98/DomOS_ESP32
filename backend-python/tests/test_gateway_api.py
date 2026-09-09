@@ -43,6 +43,27 @@ class FakeWebSocket:
         self.binary_messages.append(payload)
 
 
+class DeviceCommandRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_retries_on_reconnected_session(self):
+        stale = VoiceSession(FakeWebSocket(), "board-a", "session-stale")
+        fresh = VoiceSession(FakeWebSocket(), "board-a", "session-fresh")
+        stale.call_device_tool = AsyncMock(side_effect=asyncio.TimeoutError)
+        fresh.call_device_tool = AsyncMock(return_value={
+            "content": [{"type": "text", "text": "ok"}],
+            "isError": False,
+        })
+
+        with (
+            patch.object(main.voice_registry, "get", AsyncMock(return_value=fresh)),
+            patch.object(main.asyncio, "sleep", AsyncMock()),
+        ):
+            result = await main._call_device_tool(stale, "device.get_status", {})
+
+        self.assertEqual(result, {"message": "ok"})
+        stale.call_device_tool.assert_awaited_once()
+        fresh.call_device_tool.assert_awaited_once()
+
+
 class GatewayApiTests(unittest.TestCase):
     def test_external_service_configuration_has_no_code_defaults(self):
         env_only_fields = (
