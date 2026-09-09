@@ -42,7 +42,9 @@ bool AssistantService::Start(ES3C28PBoard *board, EventBus *events, const Assist
 
     AudioPipelineConfig pipe_cfg;
     pipe_cfg.mic_chunk_samples = 960;  // 60ms @ 16kHz
-    pipe_cfg.output_queue_depth = 4;
+    // Hold 720 ms of cloud TTS so ordinary Wi-Fi/WebSocket jitter cannot
+    // starve the real-time I2S output task between 60 ms PCM frames.
+    pipe_cfg.output_queue_depth = 12;
     pipe_cfg.on_mic_data = [this](const int16_t *pcm, size_t samples) {
         // Only stream audio once handshake is complete
         // With AEC disabled, uploading the microphone while the speaker is

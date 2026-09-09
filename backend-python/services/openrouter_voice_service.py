@@ -53,6 +53,12 @@ PCM_CHANNELS = 1
 PCM_SAMPLE_WIDTH = 2
 PCM_FRAME_MS = 60
 PCM_FRAME_BYTES = PCM_SAMPLE_RATE * PCM_FRAME_MS // 1000 * PCM_SAMPLE_WIDTH
+# Keep a small amount of synthesized speech ahead of the ESP32 playback clock.
+# Sending exactly one frame every 60 ms leaves no margin for Internet jitter and
+# makes I2S run dry.  Five frames is 300 ms, small enough for PSRAM while large
+# enough to absorb ordinary cloud/Wi-Fi scheduling delays.
+TTS_JITTER_BUFFER_FRAMES = 5
+TTS_STOP_GRACE_FRAMES = 1
 VAD_ENERGY_THRESHOLD = 180
 VAD_SILENCE_FRAMES = 9
 VAD_MIN_SPEECH_FRAMES = 3
@@ -1470,12 +1476,33 @@ class VoiceSession:
                 logger.warning("Edge TTS unavailable; using Google TTS fallback")
                 mp3 = await asyncio.to_thread(_google_synthesize, sentence)
         pcm = await asyncio.to_thread(_decode_mp3, mp3)
-        for offset in range(0, len(pcm), PCM_FRAME_BYTES):
+        frame_count = max(1, math.ceil(len(pcm) / PCM_FRAME_BYTES))
+        stream_started_at = time.monotonic()
+        for frame_index, offset in enumerate(range(0, len(pcm), PCM_FRAME_BYTES)):
+            # Prime the device queue in a short burst, then pace against a
+            # monotonic clock.  A deadline-based loop does not accumulate the
+            # event-loop drift that repeated sleep(0.06) calls introduce.
+            send_offset = max(
+                0.0,
+                (frame_index - TTS_JITTER_BUFFER_FRAMES + 1) * PCM_FRAME_MS / 1000,
+            )
+            delay = stream_started_at + send_offset - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
             frame = pcm[offset: offset + PCM_FRAME_BYTES]
             if len(frame) < PCM_FRAME_BYTES:
                 frame += bytes(PCM_FRAME_BYTES - len(frame))
             await self.send_bytes(frame)
-            await asyncio.sleep(PCM_FRAME_MS / 1000)
+
+        # Do not send tts.stop while the pre-buffered tail is still playing.
+        # The firmware intentionally flushes on stop/abort, so an early stop
+        # clips the sentence and sounds like crackling on a small speaker.
+        playback_deadline = stream_started_at + (
+            frame_count + TTS_STOP_GRACE_FRAMES
+        ) * PCM_FRAME_MS / 1000
+        delay = playback_deadline - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     async def speak_stream(self, queue: asyncio.Queue[str | None]) -> bool:
         """Play complete clauses while the LLM continues producing later tokens."""

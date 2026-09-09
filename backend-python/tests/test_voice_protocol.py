@@ -6,7 +6,7 @@ from array import array
 from pathlib import Path
 
 from services.conversation_store import ConversationStore
-from services.openrouter_voice_service import LISTENING_VAD_MAX_THRESHOLD, PCM_FRAME_BYTES, VAD_ENERGY_THRESHOLD, VAD_MAX_PAUSE_SEC, VAD_PRE_ROLL_FRAMES, VAD_SILENCE_FRAMES, WAKE_VAD_MAX_THRESHOLD, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, split_wake_word, validate_dom_hello, voice_heartbeat_loop
+from services.openrouter_voice_service import LISTENING_VAD_MAX_THRESHOLD, PCM_FRAME_BYTES, TTS_JITTER_BUFFER_FRAMES, TTS_STOP_GRACE_FRAMES, VAD_ENERGY_THRESHOLD, VAD_MAX_PAUSE_SEC, VAD_PRE_ROLL_FRAMES, VAD_SILENCE_FRAMES, WAKE_VAD_MAX_THRESHOLD, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, split_wake_word, validate_dom_hello, voice_heartbeat_loop
 from services.text_normalization import plain_speech_text
 
 
@@ -43,6 +43,10 @@ class VoiceProtocolTests(unittest.TestCase):
         self.assertEqual(WAKE_VAD_MAX_THRESHOLD, 700)
         self.assertEqual(VAD_SILENCE_FRAMES, 9)
         self.assertEqual(pcm_rms(bytes(PCM_FRAME_BYTES)), 0)
+
+    def test_tts_has_cloud_jitter_and_stop_tail_margin(self):
+        self.assertGreaterEqual(TTS_JITTER_BUFFER_FRAMES, 4)
+        self.assertGreaterEqual(TTS_STOP_GRACE_FRAMES, 1)
 
     def test_pcm_is_wrapped_as_standard_wav(self):
         wav = pcm_to_wav(bytes(PCM_FRAME_BYTES))
