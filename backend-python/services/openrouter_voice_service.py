@@ -1502,7 +1502,9 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         await session.set_wake_word()
         logger.info("Cloud voice connected device=%s provider=%s session=%s", device_id, primary_llm_provider(), session_id)
         while True:
-            raw_message = await websocket.receive()
+            raw_message = await receive_voice_message(session)
+            if raw_message is None:
+                continue
             if raw_message.get("type") == "websocket.disconnect":
                 break
             if raw_message.get("bytes") is not None:
@@ -1543,3 +1545,22 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
                 future.cancel()
         await voice_registry.remove(session_id)
         logger.info("Cloud voice disconnected device=%s", device_id)
+
+
+async def receive_voice_message(
+    session: VoiceSession,
+    timeout_sec: float | None = None,
+) -> dict[str, Any] | None:
+    """Receive one device frame, emitting an application heartbeat while idle.
+
+    Cloud proxies can expire otherwise healthy WebSockets even when protocol-level
+    ping frames are enabled.  An application frame also makes a dead peer fail on
+    the next write so the registry cannot retain a stale device session.
+    """
+    interval = timeout_sec if timeout_sec is not None else settings.VOICE_HEARTBEAT_INTERVAL_SEC
+    interval = max(float(interval), 1.0)
+    try:
+        return await asyncio.wait_for(session.websocket.receive(), timeout=interval)
+    except asyncio.TimeoutError:
+        await session.send_json({"type": "ping", "timestamp": int(time.time())})
+        return None

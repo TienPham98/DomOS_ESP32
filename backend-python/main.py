@@ -132,7 +132,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="0.6.0",
+    version="0.6.1",
     description="Dom Voice Protocol v3 with OpenRouter and persistent memory",
     lifespan=lifespan,
 )
@@ -150,7 +150,7 @@ async def health_check() -> dict:
     return {
         "status": "online",
         "service": settings.APP_NAME,
-        "version": "0.6.0",
+        "version": "0.6.1",
         "provider": primary_llm_provider(),
         "local_ai": False,
         "active_sessions": voice_registry.count,
@@ -173,6 +173,7 @@ async def health_check() -> dict:
         "openai_key_configured": bool(settings.OPENAI_API_KEY),
         "openrouter_key_configured": bool(settings.OPENROUTER_API_KEY),
         "llm_streaming": settings.LLM_STREAMING_ENABLED,
+        "voice_heartbeat_interval_sec": settings.VOICE_HEARTBEAT_INTERVAL_SEC,
         "web_search_provider": settings.WEB_SEARCH_PROVIDER,
         "web_search_configured": bool(settings.WEB_SEARCH_BASE_URL),
         "memory": "sqlite",

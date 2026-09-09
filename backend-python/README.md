@@ -95,6 +95,7 @@ MQTT_USERNAME=
 MQTT_PASSWORD=
 
 VOICE_SESSION_TIMEOUT_SEC=30
+VOICE_HEARTBEAT_INTERVAL_SEC=20
 VOICE_AUTH_TOKEN=
 
 FOOTBALL_DATA_API_KEY=thay_bang_football_data_key
@@ -141,6 +142,7 @@ Tạo API key miễn phí tại football-data.org rồi chỉ lưu key và URL t
 | `TTS_PROVIDER` | `google` | `google` hoặc nhánh Edge TTS |
 | `TTS_VOICE` | `vi-VN-HoaiMyNeural` | Voice dùng bởi Edge TTS |
 | `VOICE_SESSION_TIMEOUT_SEC` | `30` | Thời gian chờ lệnh sau khi wake |
+| `VOICE_HEARTBEAT_INTERVAL_SEC` | `20` | Heartbeat ứng dụng giữ phiên WebSocket cloud và loại session đã chết |
 | `VOICE_AUTH_TOKEN` | rỗng | Nếu có, firmware phải gửi Bearer token giống hệt |
 | `CONVERSATION_DB_PATH` | `data/conversations.db` | File lưu hội thoại và trace tool |
 | `FOOTBALL_DATA_API_KEY` | rỗng | API key lịch thi đấu; bắt buộc để tải dữ liệu mới |

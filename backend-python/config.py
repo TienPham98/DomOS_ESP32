@@ -100,6 +100,7 @@ class Settings(BaseSettings):
 
     # Voice Protocol v3: PCM, 16kHz, mono, 60ms frames
     VOICE_SESSION_TIMEOUT_SEC: int = 30
+    VOICE_HEARTBEAT_INTERVAL_SEC: int = 20
     VOICE_AUTH_TOKEN: str = ""
     BOARD_CONTROL_AUTH_TOKEN: str = ""
 

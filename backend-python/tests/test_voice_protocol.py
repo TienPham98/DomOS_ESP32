@@ -1,10 +1,12 @@
+import asyncio
+import json
 import tempfile
 import unittest
 from array import array
 from pathlib import Path
 
 from services.conversation_store import ConversationStore
-from services.openrouter_voice_service import PCM_FRAME_BYTES, VAD_ENERGY_THRESHOLD, VAD_SILENCE_FRAMES, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, split_wake_word, validate_dom_hello
+from services.openrouter_voice_service import PCM_FRAME_BYTES, VAD_ENERGY_THRESHOLD, VAD_SILENCE_FRAMES, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, receive_voice_message, split_wake_word, validate_dom_hello
 from services.text_normalization import plain_speech_text
 
 
@@ -125,6 +127,28 @@ class ConversationStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(values[new_turn], "Xin chào bạn nhé!")
             self.assertEqual(values[legacy_turn], "Cũ\nNội dung")
             self.assertNotIn("*", " ".join(values.values()))
+
+
+class VoiceHeartbeatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_connection_sends_application_heartbeat(self):
+        class IdleWebSocket:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            async def receive(self):
+                raise asyncio.TimeoutError
+
+            async def send_text(self, value: str):
+                self.sent.append(value)
+
+        websocket = IdleWebSocket()
+        session = VoiceSession(websocket, "board", "session")
+
+        message = await receive_voice_message(session, timeout_sec=0)
+
+        self.assertIsNone(message)
+        self.assertEqual(json.loads(websocket.sent[0])["type"], "ping")
+        self.assertEqual(json.loads(websocket.sent[0])["session_id"], "session")
 
 
 if __name__ == "__main__":
