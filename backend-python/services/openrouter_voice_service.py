@@ -62,6 +62,8 @@ VAD_CALIBRATION_FRAMES = 5
 VAD_START_FRAMES = 2
 VAD_PRE_ROLL_FRAMES = 24  # 1.44 s; preserves softly spoken Vietnamese sentence starts
 VAD_MAX_PAUSE_SEC = 2.0
+LISTENING_VAD_MAX_THRESHOLD = 450
+WAKE_VAD_MAX_THRESHOLD = 700
 VAD_NOISE_MULTIPLIER = 1.8
 VAD_NOISE_MARGIN = 40
 # Single-word "Hey" / "Dom" can be shorter than the old 300 ms minimum.
@@ -489,7 +491,12 @@ class VoiceSession:
             if len(self.noise_samples) < VAD_CALIBRATION_FRAMES:
                 self.noise_samples.append(energy)
                 return
-            threshold = self.vad_threshold()
+            threshold = min(
+                self.vad_threshold(),
+                WAKE_VAD_MAX_THRESHOLD
+                if self.state == "WAKE_WORD"
+                else LISTENING_VAD_MAX_THRESHOLD,
+            )
             if energy < threshold:
                 self.noise_samples.append(energy)
                 self.start_candidate_frames = 0

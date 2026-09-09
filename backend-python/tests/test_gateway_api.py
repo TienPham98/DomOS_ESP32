@@ -472,6 +472,18 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.speech_started)
         self.assertEqual(len(session.audio), 24 * PCM_FRAME_BYTES)
 
+    async def test_touch_listening_caps_a_polluted_adaptive_threshold(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session.state = "LISTENING"
+        session.noise_samples.extend([1000] * 50)
+        voice = array("h", ([-500, 500] * (PCM_FRAME_BYTES // 4))).tobytes()
+
+        await session.consume_audio(voice)
+        await session.consume_audio(voice)
+
+        self.assertTrue(session.speech_started)
+        self.assertEqual(session.capture_threshold, 450)
+
     async def test_vad_ends_after_two_seconds_without_strong_voice(self):
         session = VoiceSession(FakeWebSocket(), "board", "session")
         session.state = "LISTENING"
