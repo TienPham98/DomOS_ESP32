@@ -147,6 +147,7 @@ void WsClient::WsEventHandler(void *handler_args, esp_event_base_t /*base*/,
 
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
+        self->receive_buffer_.Reset();
         self->connected_.store(true);
         ESP_LOGI(TAG, "Connected");
         if (self->event_cb_) self->event_cb_(true);
@@ -155,22 +156,28 @@ void WsClient::WsEventHandler(void *handler_args, esp_event_base_t /*base*/,
     case WEBSOCKET_EVENT_DISCONNECTED:
     case WEBSOCKET_EVENT_CLOSED:
         self->connected_.store(false);
+        self->receive_buffer_.Reset();
         ESP_LOGW(TAG, "Disconnected");
         if (self->event_cb_) self->event_cb_(false);
         break;
 
-    case WEBSOCKET_EVENT_DATA:
-        if (data->op_code == 0x01 /* text */ && data->data_ptr && data->data_len > 0) {
-            if (self->text_cb_) {
-                self->text_cb_(static_cast<const char *>(data->data_ptr), data->data_len);
-            }
-        } else if (data->op_code == 0x02 /* binary */ && data->data_ptr && data->data_len > 0) {
-            if (self->binary_cb_) {
-                self->binary_cb_(reinterpret_cast<const uint8_t *>(data->data_ptr),
-                                 data->data_len);
-            }
+    case WEBSOCKET_EVENT_DATA: {
+        if (!data || data->data_len < 0 || data->payload_len < 0 || data->payload_offset < 0) break;
+        const auto result = self->receive_buffer_.Append(
+            data->op_code, data->fin, data->payload_len, data->payload_offset,
+            data->data_ptr, data->data_len);
+        if (result == WsMessageBuffer::Result::Complete) {
+            const auto& message = self->receive_buffer_.Message();
+            if (self->receive_buffer_.Opcode() == 1 && self->text_cb_)
+                self->text_cb_(message.data(), message.size());
+            else if (self->receive_buffer_.Opcode() == 2 && self->binary_cb_)
+                self->binary_cb_(reinterpret_cast<const uint8_t*>(message.data()), message.size());
+            self->receive_buffer_.Reset();
+        } else if (result == WsMessageBuffer::Result::Invalid) {
+            ESP_LOGW(TAG, "Discarded invalid or oversized WebSocket message");
         }
         break;
+    }
 
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WebSocket error");

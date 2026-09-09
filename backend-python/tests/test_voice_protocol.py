@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from array import array
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 from services.conversation_store import ConversationStore
 from services.openrouter_voice_service import LISTENING_VAD_MAX_THRESHOLD, PCM_FRAME_BYTES, TTS_JITTER_BUFFER_FRAMES, TTS_STOP_GRACE_FRAMES, VAD_ENERGY_THRESHOLD, VAD_MAX_PAUSE_SEC, VAD_PRE_ROLL_FRAMES, VAD_SILENCE_FRAMES, WAKE_VAD_MAX_THRESHOLD, VoiceSession, matches_device_wake_signature, normalize_wake_pcm, pcm_rms, pcm_signal_rms, pcm_to_wav, split_wake_word, validate_dom_hello, voice_heartbeat_loop
@@ -162,6 +163,66 @@ class VoiceHeartbeatTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TtsStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_before_first_audio_stops_producer(self):
+        session = VoiceSession(None, "board", "cancel-test")
+        session.send_json = AsyncMock()
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def synthesize(_):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        session._synthesize_sentence_pcm = synthesize
+        queue = asyncio.Queue()
+        queue.put_nowait("hello")
+        task = asyncio.create_task(session.speak_stream(queue))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertTrue(cancelled.is_set())
+        session.send_json.assert_not_awaited()
+
+    async def test_provider_error_before_first_audio_does_not_leave_worker(self):
+        session = VoiceSession(None, "board", "failure-test")
+        session.send_json = AsyncMock()
+        session._synthesize_sentence_pcm = AsyncMock(side_effect=RuntimeError("tts down"))
+        queue = asyncio.Queue()
+        queue.put_nowait("hello")
+        with self.assertRaisesRegex(RuntimeError, "tts down"):
+            await asyncio.wait_for(session.speak_stream(queue), 1)
+        self.assertFalse(any(t.get_name() == "tts-producer-failure-test" for t in asyncio.all_tasks()))
+
+    async def test_twenty_clauses_keep_constant_buffer_and_preserve_pcm(self):
+        session = VoiceSession(None, "board", "clock-test")
+        session.send_json = AsyncMock()
+        clock = SimpleNamespace(now=100.0)
+        sent = []
+
+        async def sleep(delay):
+            clock.now += delay
+
+        async def send(frame):
+            sent.append((clock.now, frame))
+
+        session.send_bytes = send
+        deadline = None
+        frame = bytes([1, 2]) * (PCM_FRAME_BYTES // 2)
+        with patch("services.openrouter_voice_service.time", SimpleNamespace(monotonic=lambda: clock.now)), \
+             patch("services.openrouter_voice_service.asyncio.sleep", sleep):
+            for _ in range(20):
+                deadline = await session._send_synthesized_sentence("clause", frame * 8, deadline)
+            await session._wait_for_tts_tail(deadline)
+        self.assertEqual(len(sent), 160)
+        self.assertTrue(all(data == frame for _, data in sent))
+        for index, (at, _) in enumerate(sent):
+            buffered_seconds = (index + 1) * 0.06 - (at - 100.0)
+            self.assertLessEqual(buffered_seconds, TTS_JITTER_BUFFER_FRAMES * 0.06 + 0.001)
+            self.assertGreater(buffered_seconds, 0)
+        self.assertGreaterEqual(clock.now, 100.0 + 160 * 0.06)
+
     async def test_next_clause_is_synthesized_while_current_audio_plays(self):
         session = VoiceSession(None, "board", "session")
         session.send_json = AsyncMock()

@@ -15,6 +15,7 @@
 #include <atomic>
 
 #include "esp_event.h"
+#include "ws_message_buffer.h"
 
 using WsTextCallback   = std::function<void(const char *data, size_t len)>;
 using WsBinaryCallback = std::function<void(const uint8_t *data, size_t len)>;
@@ -57,4 +58,5 @@ private:
     WsTextCallback   text_cb_;
     WsBinaryCallback binary_cb_;
     WsEventCallback  event_cb_;
+    WsMessageBuffer receive_buffer_;
 };

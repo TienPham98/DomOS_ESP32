@@ -4,6 +4,7 @@
 #include "board/es3c28p/board_es3c28p.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -177,19 +178,31 @@ void AudioPipeline::Stop()
 
 bool AudioPipeline::EnqueueAudio(const int16_t *pcm, size_t samples)
 {
-    if (!running_.load() || output_queue_ == nullptr || pcm == nullptr || samples == 0) return false;
+    if (!running_.load() || output_queue_ == nullptr || pcm == nullptr || samples == 0 || samples > 960) return false;
     AudioChunk chunk;
-    const size_t copy_count = samples < 960 ? samples : 960;
-    chunk.count = copy_count;
-    memcpy(chunk.samples, pcm, copy_count * sizeof(int16_t));
+    chunk.count = samples;
+    memcpy(chunk.samples, pcm, samples * sizeof(int16_t));
+    std::lock_guard<std::mutex> lock(output_mutex_);
     return xQueueSend(static_cast<QueueHandle_t>(output_queue_), &chunk, 0) == pdPASS;
 }
 
 void AudioPipeline::FlushOutput()
 {
+    std::lock_guard<std::mutex> lock(output_mutex_);
     if (output_queue_) {
         xQueueReset(static_cast<QueueHandle_t>(output_queue_));
     }
+}
+
+bool AudioPipeline::IsOutputDrained()
+{
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    // Queue empty does not mean the codec has finished. Account for the frame
+    // in I2S_WritePCM and the ES3C28P default DMA ring (6 * 240 / 16k = 90 ms).
+    constexpr int64_t kDmaTailUs = 120000;
+    return !output_in_flight_ &&
+        (!output_queue_ || uxQueueMessagesWaiting(static_cast<QueueHandle_t>(output_queue_)) == 0) &&
+        (output_written_at_us_ == 0 || esp_timer_get_time() - output_written_at_us_ >= kDmaTailUs);
 }
 
 // ─── Task implementations ─────────────────────────────────────────────────────
@@ -245,6 +258,7 @@ void AudioPipeline::UplinkTask(void *arg)
 
     ESP_LOGI(TAG, "UplinkTask running on core %d", (int)xPortGetCoreID());
     while (self->running_.load()) {
+        if (self->cfg_.on_service_tick) self->cfg_.on_service_tick();
         if (xQueueReceive(static_cast<QueueHandle_t>(self->mic_queue_),
                           &chunk, pdMS_TO_TICKS(50)) == pdPASS &&
             self->cfg_.on_mic_data && self->running_.load()) {
@@ -273,9 +287,22 @@ void AudioPipeline::OutputTask(void *arg)
     ESP_LOGI(TAG, "OutputTask running on core %d", (int)xPortGetCoreID());
 
     while (self->running_.load()) {
-        if (xQueueReceive(static_cast<QueueHandle_t>(self->output_queue_),
-                          chunk, pdMS_TO_TICKS(50)) == pdPASS) {
-            self->board_->I2S_WritePCM(chunk->samples, chunk->count);
+        bool received = false;
+        {
+            std::lock_guard<std::mutex> lock(self->output_mutex_);
+            received = xQueueReceive(static_cast<QueueHandle_t>(self->output_queue_), chunk, 0) == pdPASS;
+            if (received) self->output_in_flight_ = true;
+        }
+        if (received) {
+            const esp_err_t result = self->board_->I2S_WritePCM(chunk->samples, chunk->count);
+            {
+                std::lock_guard<std::mutex> lock(self->output_mutex_);
+                self->output_written_at_us_ = esp_timer_get_time();
+                self->output_in_flight_ = false;
+            }
+            if (result != ESP_OK) ESP_LOGE(TAG, "I2S output failed: %s", esp_err_to_name(result));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
 

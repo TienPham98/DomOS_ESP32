@@ -1489,21 +1489,15 @@ class VoiceSession:
         # Only the first clause (or a clause after a real synthesis gap) needs
         # a burst. Consecutive clauses already have audio queued; bursting each
         # one would eventually overflow the finite ESP32 queue.
-        prebuffer_frames = (
-            1
-            if previous_playback_deadline is not None
-            and stream_started_at < previous_playback_deadline
-            else TTS_JITTER_BUFFER_FRAMES
-        )
+        playback_starts_at = max(previous_playback_deadline or 0.0, stream_started_at)
         for frame_index, offset in enumerate(range(0, len(pcm), PCM_FRAME_BYTES)):
             # Prime the device queue in a short burst, then pace against a
             # monotonic clock.  A deadline-based loop does not accumulate the
             # event-loop drift that repeated sleep(0.06) calls introduce.
-            send_offset = max(
-                0.0,
-                (frame_index - prebuffer_frames + 1) * PCM_FRAME_MS / 1000,
-            )
-            delay = stream_started_at + send_offset - time.monotonic()
+            send_at = playback_starts_at + (
+                frame_index - TTS_JITTER_BUFFER_FRAMES + 1
+            ) * PCM_FRAME_MS / 1000
+            delay = send_at - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
             frame = pcm[offset: offset + PCM_FRAME_BYTES]
@@ -1511,7 +1505,6 @@ class VoiceSession:
                 frame += bytes(PCM_FRAME_BYTES - len(frame))
             await self.send_bytes(frame)
 
-        playback_starts_at = max(previous_playback_deadline or 0.0, stream_started_at)
         return playback_starts_at + frame_count * PCM_FRAME_MS / 1000
 
     async def _wait_for_tts_tail(self, playback_deadline: float | None) -> None:
@@ -1536,79 +1529,57 @@ class VoiceSession:
 
     async def speak_stream(self, queue: asyncio.Queue[str | None]) -> bool:
         """Synthesize the next clause while the current clause is playing."""
-        synthesis_jobs: asyncio.Queue[asyncio.Task[tuple[str, bytes] | None] | None] = (
-            asyncio.Queue(maxsize=2)
-        )
-        synthesis_slots = asyncio.Semaphore(2)
-        active_syntheses: set[asyncio.Task[tuple[str, bytes] | None]] = set()
-
-        async def synthesize_with_limit(sentence: str) -> tuple[str, bytes] | None:
-            async with synthesis_slots:
-                return await self._synthesize_sentence_pcm(sentence)
+        ready: asyncio.Queue[tuple[str, bytes] | Exception | None] = asyncio.Queue(maxsize=2)
 
         async def synthesize_ahead() -> None:
-            while True:
-                sentence = await queue.get()
-                if sentence is None:
-                    await synthesis_jobs.put(None)
-                    return
-                # Schedule independently from playback. This lets Google/Edge
-                # synthesize clause two while clause one is still being
-                # generated or played, while the semaphore bounds provider
-                # concurrency and preserves queue order.
-                job = asyncio.create_task(synthesize_with_limit(sentence))
-                active_syntheses.add(job)
-                job.add_done_callback(active_syntheses.discard)
-                await synthesis_jobs.put(job)
+            try:
+                while True:
+                    sentence = await queue.get()
+                    if sentence is None:
+                        await ready.put(None)
+                        return
+                    audio = await self._synthesize_sentence_pcm(sentence)
+                    if audio is not None:
+                        await ready.put(audio)
+            except Exception as exc:
+                await ready.put(exc)
 
-        synthesize_task = asyncio.create_task(synthesize_ahead())
-        first_job = await synthesis_jobs.get()
-        if first_job is None:
-            await synthesize_task
-            return False
-        first = await first_job
-        self.state = "SPEAKING"
-        await self.send_json({"type": "tts", "state": "start"})
+        producer = asyncio.create_task(synthesize_ahead(), name=f"tts-producer-{self.session_id}")
+        started = False
         try:
-            synthesized = first
             playback_deadline: float | None = None
             while True:
-                if synthesized is not None:
-                    playback_deadline = await self._send_synthesized_sentence(
-                        *synthesized, playback_deadline
-                    )
-                next_job = await synthesis_jobs.get()
-                if next_job is None:
+                synthesized = await ready.get()
+                if synthesized is None:
                     break
-                synthesized = await next_job
+                if isinstance(synthesized, Exception):
+                    raise synthesized
+                if not started:
+                    self.state = "SPEAKING"
+                    await self.send_json({"type": "tts", "state": "start"})
+                    started = True
+                playback_deadline = await self._send_synthesized_sentence(
+                    *synthesized, playback_deadline
+                )
             await self._wait_for_tts_tail(playback_deadline)
+            return started
         finally:
-            if not synthesize_task.done():
-                synthesize_task.cancel()
-            await asyncio.gather(synthesize_task, return_exceptions=True)
-            pending_syntheses = tuple(active_syntheses)
-            for job in pending_syntheses:
-                job.cancel()
-            if pending_syntheses:
-                await asyncio.gather(*pending_syntheses, return_exceptions=True)
-            await self.send_json({"type": "tts", "state": "stop"})
-        return True
+            # Covers cancellation before the first PCM, provider errors and
+            # disconnects as well as normal playback. No orphan producer can
+            # continue generating a cancelled answer into an abandoned queue.
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+            if started:
+                await self.send_json({"type": "tts", "state": "stop"})
 
     async def speak(self, text: str) -> None:
-        self.state = "SPEAKING"
-        await self.send_json({"type": "tts", "state": "start"})
-        try:
-            normalized = normalize_tts_text(text)
-            sentences = [
-                part.strip() for part in re.split(r"(?<=[.!?])\s+|(?<=[。！？])", normalized)
-                if part.strip()
-            ]
-            playback_deadline: float | None = None
-            for sentence in sentences or [normalized]:
-                playback_deadline = await self._speak_sentence(sentence, playback_deadline)
-            await self._wait_for_tts_tail(playback_deadline)
-        finally:
-            await self.send_json({"type": "tts", "state": "stop"})
+        normalized = normalize_tts_text(text)
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        for sentence in re.split(r"(?<=[.!?])\s+|(?<=[。！？])", normalized):
+            if sentence.strip():
+                queue.put_nowait(sentence.strip())
+        queue.put_nowait(None)
+        await self.speak_stream(queue)
 
 
 async def _edge_synthesize(text: str) -> bytes:
@@ -1623,7 +1594,7 @@ async def _edge_synthesize(text: str) -> bytes:
 
 def _google_synthesize(text: str) -> bytes:
     output = io.BytesIO()
-    gTTS(text=text, lang="vi").write_to_fp(output)
+    gTTS(text=text, lang="vi", timeout=settings.TTS_TIMEOUT_SEC).write_to_fp(output)
     return output.getvalue()
 
 
@@ -1637,6 +1608,9 @@ def _decode_mp3(mp3: bytes) -> bytes:
                 frames = [frames]
             for frame in frames:
                 output.extend(bytes(frame.planes[0])[: frame.samples * PCM_SAMPLE_WIDTH])
+        # Resampling holds a filter tail; omitting flush loses final samples.
+        for frame in resampler.resample(None) or []:
+            output.extend(bytes(frame.planes[0])[: frame.samples * PCM_SAMPLE_WIDTH])
     return bytes(output)
 
 

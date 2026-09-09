@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <atomic>
+#include <mutex>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -30,6 +31,8 @@ struct AudioPipelineConfig {
     size_t output_queue_depth = 8;
     // Callback nhận PCM từ mic
     MicChunkCallback on_mic_data;
+    // Runs on the network/uplink task, never on the real-time I2S tasks.
+    std::function<void()> on_service_tick;
 };
 
 class AudioPipeline {
@@ -43,6 +46,7 @@ public:
 
     // Xóa output queue (dùng khi abort)
     void FlushOutput();
+    bool IsOutputDrained();
 
     bool IsRunning() const { return running_.load(); }
 
@@ -63,6 +67,9 @@ private:
     std::atomic<TaskHandle_t> mic_task_{nullptr};
     std::atomic<TaskHandle_t> uplink_task_{nullptr};
     std::atomic<TaskHandle_t> output_task_{nullptr};
+    std::mutex output_mutex_;
+    bool output_in_flight_ = false;
+    int64_t output_written_at_us_ = 0;
 
     struct AudioChunk {
         int16_t samples[960];  // max 60ms @ 16kHz

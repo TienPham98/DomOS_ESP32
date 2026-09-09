@@ -94,6 +94,7 @@ private:
     void SendMcpResult(int req_id, const char *text, bool is_error = false);
 
     void NotifyUi();
+    void FinishPlaybackIfDrained();
 
     ES3C28PBoard          *board_   = nullptr;
     AppManager            *apps_    = nullptr;
@@ -106,6 +107,10 @@ private:
     std::atomic<uint8_t>  state_{static_cast<uint8_t>(AssistantState::Idle)};
     std::atomic<bool> handshake_done_{false};
     std::atomic<bool> tts_active_{false};
+    std::atomic<bool> response_aborted_{false};
+    std::mutex playback_mutex_;
+    bool playback_finishing_ = false;
+    AssistantState after_playback_ = AssistantState::Armed;
 
     mutable std::mutex mutex_;
     std::mutex channel_mutex_;

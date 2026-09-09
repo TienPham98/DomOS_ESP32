@@ -45,6 +45,7 @@ bool AssistantService::Start(ES3C28PBoard *board, EventBus *events, const Assist
     // Hold 720 ms of cloud TTS so ordinary Wi-Fi/WebSocket jitter cannot
     // starve the real-time I2S output task between 60 ms PCM frames.
     pipe_cfg.output_queue_depth = 12;
+    pipe_cfg.on_service_tick = [this]() { FinishPlaybackIfDrained(); };
     pipe_cfg.on_mic_data = [this](const int16_t *pcm, size_t samples) {
         // Only stream audio once handshake is complete
         // With AEC disabled, uploading the microphone while the speaker is
@@ -163,6 +164,8 @@ void AssistantService::CloseAudioChannel()
         SendListenStop();
     }
     ws_.Disconnect();
+    std::lock_guard<std::mutex> playback_lock(playback_mutex_);
+    playback_finishing_ = false;
     pipeline_.FlushOutput();
     board_->SetPAEnabled(false);
     SetState(AssistantState::Idle);
@@ -219,6 +222,8 @@ void AssistantService::OnWsConnect(bool connected)
         if (events_) events_->Publish(EventType::AssistantConnected, TAG, "");
     } else {
         ESP_LOGW(TAG, "WS disconnected");
+        std::lock_guard<std::mutex> playback_lock(playback_mutex_);
+        playback_finishing_ = false;
         SetState(AssistantState::Idle);
         handshake_done_.store(false);
         tts_active_.store(false);
@@ -259,11 +264,39 @@ void AssistantService::OnWsText(const char *data, size_t /*len*/)
 
 void AssistantService::OnWsBinary(const uint8_t *data, size_t len)
 {
-    if (GetState() != AssistantState::Speaking) {
+    std::lock_guard<std::mutex> lock(playback_mutex_);
+    if (GetState() != AssistantState::Speaking || !tts_active_.load()) {
+        return;
+    }
+    if (len == 0 || len % sizeof(int16_t) != 0) {
+        ESP_LOGW(TAG, "Invalid PCM message length=%u", static_cast<unsigned>(len));
         return;
     }
     const size_t samples = len / sizeof(int16_t);
-    pipeline_.EnqueueAudio(reinterpret_cast<const int16_t *>(data), samples);
+    for (size_t offset = 0; offset < samples; offset += 960) {
+        const size_t count = std::min(size_t(960), samples - offset);
+        if (!pipeline_.EnqueueAudio(reinterpret_cast<const int16_t *>(data) + offset, count)) {
+            ESP_LOGE(TAG, "Playback queue full: PCM frame dropped");
+            break;
+        }
+    }
+}
+
+void AssistantService::FinishPlaybackIfDrained()
+{
+    std::lock_guard<std::mutex> lock(playback_mutex_);
+    if (!playback_finishing_ || !pipeline_.IsOutputDrained()) return;
+    playback_finishing_ = false;
+    if (GetState() != AssistantState::Speaking) return;
+    board_->SetPAEnabled(false);
+    SetState(after_playback_);
+    {
+        std::lock_guard<std::mutex> text_lock(mutex_);
+        emotion_ = after_playback_ == AssistantState::Listening ? "listening" : "idle";
+    }
+    ESP_LOGI(TAG, "Playback drained; microphone can resume");
+    NotifyUi();
+    if (events_) events_->Publish(EventType::AssistantSpeaking, TAG, "stop");
 }
 
 // ─── Protocol Senders ────────────────────────────────────────────────────────
@@ -281,6 +314,7 @@ void AssistantService::SendHello()
 
 void AssistantService::SendListenStart()
 {
+    response_aborted_.store(false);
     // Let gateway VAD detect speech end automatically. A screen tap can still
     // call SendListenStop() as a manual fallback in a noisy environment.
     const char *json = "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\"}";
@@ -328,17 +362,23 @@ void AssistantService::SendAbort(const char *reason)
 {
     char json[128];
     snprintf(json, sizeof(json), "{\"type\":\"abort\",\"reason\":\"%s\"}", reason);
-    ws_.SendText(json);
-    tts_active_.store(false);
-    pipeline_.FlushOutput();
-    board_->SetPAEnabled(false);
-    SetState(AssistantState::Armed);
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        emotion_ = "idle";
-        assistant_text_ = "Response cancelled";
+        std::lock_guard<std::mutex> playback_lock(playback_mutex_);
+        playback_finishing_ = false;
+        response_aborted_.store(true);
+        tts_active_.store(false);
+        pipeline_.FlushOutput();
+        board_->SetPAEnabled(false);
+        SetState(AssistantState::Armed);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            emotion_ = "idle";
+            assistant_text_ = "Response cancelled";
+        }
+        NotifyUi();
     }
-    NotifyUi();
+    // Silence locally before any network operation can wait on TCP.
+    ws_.SendText(json);
 }
 
 void AssistantService::SendMcpResult(int req_id, const char *text, bool is_error)
@@ -377,6 +417,7 @@ void AssistantService::HandleHello(const char *json)
     cJSON_Delete(root);
 
     handshake_done_.store(true);
+    response_aborted_.store(false);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         assistant_text_ = "Say Hey Dom or tap the screen";
@@ -399,6 +440,7 @@ void AssistantService::HandleListen(const char *json)
     const bool wake_activation = (from_wake_word || legacy_wake) &&
         (strcmp(listen_state, "start") == 0 || strcmp(listen_state, "processing") == 0);
     if (wake_activation && events_) {
+        response_aborted_.store(false);
         // Wake activation and subsequent app.launch requests share one FIFO.
         // Never foreground Assistant on ordinary TTS/state updates.
         if (!events_->Publish(EventType::AppLaunchRequested, TAG, "assistant")) {
@@ -406,18 +448,32 @@ void AssistantService::HandleListen(const char *json)
         }
     }
     if (strcmp(listen_state, "wake") == 0) {
+        std::lock_guard<std::mutex> playback_lock(playback_mutex_);
+        if (playback_finishing_) {
+            after_playback_ = AssistantState::Armed;
+            cJSON_Delete(root);
+            return;
+        }
         SetState(AssistantState::Armed);
         std::lock_guard<std::mutex> lock(mutex_);
         emotion_ = "idle";
         user_text_ = "";
         assistant_text_ = "Say Hey Dom or tap the screen";
     } else if (strcmp(listen_state, "start") == 0) {
+        response_aborted_.store(false);
+        std::lock_guard<std::mutex> playback_lock(playback_mutex_);
+        if (playback_finishing_) {
+            after_playback_ = AssistantState::Listening;
+            cJSON_Delete(root);
+            return;
+        }
         SetState(AssistantState::Listening);
         std::lock_guard<std::mutex> lock(mutex_);
         emotion_ = "listening";
         user_text_ = "";
         assistant_text_ = "I'm listening...";
     } else if (strcmp(listen_state, "processing") == 0) {
+        if (response_aborted_.load()) { cJSON_Delete(root); return; }
         SetState(AssistantState::Processing);
         std::lock_guard<std::mutex> lock(mutex_);
         emotion_ = "thinking";
@@ -429,6 +485,7 @@ void AssistantService::HandleListen(const char *json)
 
 void AssistantService::HandleStt(const char *json)
 {
+    if (response_aborted_.load()) return;
     cJSON *root = cJSON_Parse(json);
     if (!root) return;
     cJSON *text_j = cJSON_GetObjectItemCaseSensitive(root, "text");
@@ -448,6 +505,7 @@ void AssistantService::HandleStt(const char *json)
 
 void AssistantService::HandleLlm(const char *json)
 {
+    if (response_aborted_.load()) return;
     cJSON *root = cJSON_Parse(json);
     if (!root) return;
     cJSON *emotion_j = cJSON_GetObjectItemCaseSensitive(root, "emotion");
@@ -480,11 +538,15 @@ void AssistantService::HandleTts(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
     if (!root) return;
+    std::lock_guard<std::mutex> playback_lock(playback_mutex_);
 
     cJSON *state_j = cJSON_GetObjectItemCaseSensitive(root, "state");
     const char *tts_state = state_j && cJSON_IsString(state_j) ? state_j->valuestring : "";
 
     if (strcmp(tts_state, "start") == 0) {
+        if (response_aborted_.load()) { cJSON_Delete(root); return; }
+        playback_finishing_ = false;
+        after_playback_ = AssistantState::Armed;
         tts_active_.store(true);
         SetState(AssistantState::Speaking);
         board_->SetPAEnabled(true);
@@ -496,6 +558,7 @@ void AssistantService::HandleTts(const char *json)
         if (events_) events_->Publish(EventType::AssistantSpeaking, TAG, "start");
 
     } else if (strcmp(tts_state, "sentence_start") == 0) {
+        if (response_aborted_.load()) { cJSON_Delete(root); return; }
         cJSON *text_j = cJSON_GetObjectItemCaseSensitive(root, "text");
         if (text_j && cJSON_IsString(text_j)) {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -506,15 +569,9 @@ void AssistantService::HandleTts(const char *json)
 
     } else if (strcmp(tts_state, "stop") == 0) {
         tts_active_.store(false);
-        pipeline_.FlushOutput();
-        board_->SetPAEnabled(false);
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            emotion_ = "idle";
-        }
-        NotifyUi();
-        if (events_) events_->Publish(EventType::AssistantSpeaking, TAG, "stop");
-        // The gateway sends listen.wake after the response is fully complete.
+        // End-of-stream is not an abort. Let queued PCM and the I2S DMA tail
+        // finish before muting the amplifier or enabling microphone upload.
+        playback_finishing_ = GetState() == AssistantState::Speaking;
     }
 
     cJSON_Delete(root);
