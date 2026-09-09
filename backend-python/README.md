@@ -246,6 +246,7 @@ WAKE_WORD -> LISTENING -> PROCESSING -> SPEAKING -> WAKE_WORD
 - `VAD_MIN_SPEECH_FRAMES=3`.
 - `VAD_SILENCE_FRAMES=9`, xét trên cửa sổ 12 frame để chịu được xung nhiễu.
 - Bộ đệm trước VAD giữ 24 frame, tương đương 1,44 giây, để không mất phần đầu câu nói nhỏ.
+- Nếu nhiễu nền không xuống dưới ngưỡng silence, câu vẫn được chốt sau 2 giây không có frame giọng nói rõ.
 - Wake hard limit: 3 giây; câu lệnh hard limit: 20 giây.
 - Mỗi frame: 60 ms, 1920 byte.
 - Sau wake, nếu không có lệnh trong 30 giây, gateway trở lại `WAKE_WORD`.

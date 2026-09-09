@@ -61,6 +61,7 @@ WAKE_MAX_FRAMES = 3_000 // PCM_FRAME_MS
 VAD_CALIBRATION_FRAMES = 5
 VAD_START_FRAMES = 2
 VAD_PRE_ROLL_FRAMES = 24  # 1.44 s; preserves softly spoken Vietnamese sentence starts
+VAD_MAX_PAUSE_SEC = 2.0
 VAD_NOISE_MULTIPLIER = 1.8
 VAD_NOISE_MARGIN = 40
 # Single-word "Hey" / "Dom" can be shorter than the old 300 ms minimum.
@@ -391,6 +392,7 @@ class VoiceSession:
         self.silence_window: deque[bool] = deque(maxlen=12)
         self.speech_started = False
         self.speech_started_at = 0.0
+        self.last_strong_voice_at = 0.0
         self.max_energy = 0
         self.speech_energy_total = 0
         self.pipeline_task: asyncio.Task[None] | None = None
@@ -424,6 +426,7 @@ class VoiceSession:
         self.silence_window.clear()
         self.speech_started = False
         self.speech_started_at = 0.0
+        self.last_strong_voice_at = 0.0
         self.max_energy = 0
         self.speech_energy_total = 0
         self.start_candidate_frames = 0
@@ -496,6 +499,7 @@ class VoiceSession:
                 return
             self.speech_started = True
             self.speech_started_at = time.monotonic()
+            self.last_strong_voice_at = self.speech_started_at
             self.audio.extend(b"".join(self.pre_roll))
             self.speech_frames = self.start_candidate_frames
             self.speech_energy_total = energy
@@ -505,7 +509,17 @@ class VoiceSession:
         self.audio.extend(pcm)
         # End the utterance against the calibrated room noise. A low fixed
         # release threshold made noisy rooms run every wake capture to 3 s.
+        now = time.monotonic()
         release_threshold = max(VAD_ENERGY_THRESHOLD, round(self.capture_threshold * 0.9))
+        # A calibrated room normally ends via the 9-frame silence window.
+        # If startup/background noise remains above that release threshold,
+        # still end after two seconds without a clearly voiced frame.
+        strong_voice_threshold = max(
+            self.capture_threshold,
+            min(round(self.max_energy * 0.35), round(self.capture_threshold * 1.5)),
+        )
+        if energy >= strong_voice_threshold:
+            self.last_strong_voice_at = now
         if energy >= release_threshold:
             self.speech_frames += 1
             self.speech_energy_total += energy
@@ -522,7 +536,12 @@ class VoiceSession:
         )
         reached_hard_limit = (
             len(self.audio) >= frame_limit * PCM_FRAME_BYTES
-            or time.monotonic() - self.speech_started_at >= elapsed_limit
+            or now - self.speech_started_at >= elapsed_limit
+        )
+        reached_max_pause = (
+            self.state == "LISTENING"
+            and self.last_strong_voice_at > 0
+            and now - self.last_strong_voice_at >= VAD_MAX_PAUSE_SEC
         )
         min_speech_frames = (
             WAKE_MIN_SPEECH_FRAMES if self.state == "WAKE_WORD" else VAD_MIN_SPEECH_FRAMES
@@ -536,7 +555,7 @@ class VoiceSession:
             return
         if (
             self.speech_frames >= min_speech_frames
-            and (enough_recent_silence or reached_hard_limit)
+            and (enough_recent_silence or reached_max_pause or reached_hard_limit)
         ):
             await self.start_pipeline()
 

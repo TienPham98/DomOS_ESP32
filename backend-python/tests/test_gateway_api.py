@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 import warnings
 from array import array
@@ -470,6 +471,23 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(session.speech_started)
         self.assertEqual(len(session.audio), 24 * PCM_FRAME_BYTES)
+
+    async def test_vad_ends_after_two_seconds_without_strong_voice(self):
+        session = VoiceSession(FakeWebSocket(), "board", "session")
+        session.state = "LISTENING"
+        session.speech_started = True
+        session.speech_started_at = time.monotonic() - 3
+        session.last_strong_voice_at = time.monotonic() - 2.1
+        session.speech_frames = 3
+        session.capture_threshold = 180
+        session.max_energy = 1200
+        session.audio.extend(bytes(PCM_FRAME_BYTES * 3))
+        background = array("h", ([-250, 250] * (PCM_FRAME_BYTES // 4))).tobytes()
+        session.start_pipeline = AsyncMock()
+
+        await session.consume_audio(background)
+
+        session.start_pipeline.assert_awaited_once()
 
     async def test_registry_preserves_provider_backoff_across_reconnect(self):
         registry = VoiceRegistry()
