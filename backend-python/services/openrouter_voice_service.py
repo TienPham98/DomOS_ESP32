@@ -406,6 +406,7 @@ class VoiceSession:
         self.device_id = device_id
         self.session_id = session_id
         self.state = "IDLE"
+        self.local_vad = False  # Explicitly negotiated; old firmware keeps RMS VAD.
         self.send_lock = asyncio.Lock()
         self.pre_roll: deque[bytes] = deque(maxlen=VAD_PRE_ROLL_FRAMES)
         self.noise_samples: deque[int] = deque(maxlen=50)
@@ -591,7 +592,10 @@ class VoiceSession:
             return
         if (
             self.speech_frames >= min_speech_frames
-            and (enough_recent_silence or reached_max_pause or reached_hard_limit)
+            and (reached_hard_limit or (
+                not (self.local_vad and self.state == "LISTENING")
+                and (enough_recent_silence or reached_max_pause)
+            ))
         ):
             await self.start_pipeline()
 
@@ -599,7 +603,12 @@ class VoiceSession:
         min_speech_frames = (
             WAKE_MIN_SPEECH_FRAMES if self.state == "WAKE_WORD" else VAD_MIN_SPEECH_FRAMES
         )
-        if self.pipeline_task is not None or self.speech_frames < min_speech_frames:
+        # A negotiated neural VAD can detect quiet speech below the legacy RMS
+        # floor. Do not discard its explicit stop solely on an energy counter.
+        enough_speech = (len(self.audio) >= 3 * PCM_FRAME_BYTES
+                         if self.local_vad and self.state == "LISTENING"
+                         else self.speech_frames >= min_speech_frames)
+        if self.pipeline_task is not None or not enough_speech:
             return
         pcm = bytes(self.audio)
         wake_check = self.state == "WAKE_WORD"
@@ -1628,11 +1637,14 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
         hello = json.loads(raw)
         validate_dom_hello(hello)
+        features = hello.get("features")
+        session.local_vad = isinstance(features, dict) and features.get("local_vad") is True
         await voice_registry.add(session)
         await session.send_json({
             "type": "hello", "provider": primary_llm_provider(), "transport": "websocket",
             "audio_params": {"codec": "pcm", "sample_rate": 16_000, "channels": 1, "frame_duration": 60},
-            "features": {"mcp": True, "vad": True, "emotions": True, "tts_streaming": True},
+            "features": {"mcp": True, "vad": True, "local_vad": session.local_vad,
+                         "emotions": True, "tts_streaming": True},
         })
         await session.set_wake_word()
         heartbeat_task = asyncio.create_task(

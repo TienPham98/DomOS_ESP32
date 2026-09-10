@@ -156,7 +156,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="0.7.4",
+    version="0.7.5",
     description="Dom Voice Protocol v3 with OpenRouter and persistent memory",
     lifespan=lifespan,
 )
@@ -174,7 +174,7 @@ async def health_check() -> dict:
     return {
         "status": "online",
         "service": settings.APP_NAME,
-        "version": "0.7.4",
+        "version": "0.7.5",
         "provider": primary_llm_provider(),
         "local_ai": False,
         "active_sessions": voice_registry.count,
