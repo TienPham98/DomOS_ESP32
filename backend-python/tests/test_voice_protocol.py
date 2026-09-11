@@ -101,6 +101,21 @@ class VoiceProtocolTests(unittest.TestCase):
         self.assertFalse(matches_device_wake_signature("good morning", "hình tròn"))
 
 
+class BatchedPcmTests(unittest.IsolatedAsyncioTestCase):
+    async def test_coalesced_websocket_payload_preserves_vad_frame_boundaries(self):
+        session = VoiceSession(None, "board", "session")
+        frame = bytes([1, 2]) * (PCM_FRAME_BYTES // 2)
+        session._consume_audio_frame = AsyncMock()
+
+        await session.consume_audio(frame * 4)
+
+        self.assertEqual(session._consume_audio_frame.await_count, 4)
+        self.assertTrue(all(
+            call.args == (frame,)
+            for call in session._consume_audio_frame.await_args_list
+        ))
+
+
 class ConversationStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_turn_and_tool_trace_are_persistent_context(self):
         with tempfile.TemporaryDirectory() as directory:

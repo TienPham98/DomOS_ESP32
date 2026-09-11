@@ -512,6 +512,22 @@ class VoiceSession:
             pass
 
     async def consume_audio(self, pcm: bytes) -> None:
+        """Consume one or more complete 60 ms PCM frames.
+
+        The ESP32 coalesces adjacent frames into a single WebSocket message to
+        amortize TLS latency. Keep VAD timing frame-based by splitting that
+        transport message at the protocol boundary before processing it.
+        """
+        complete_bytes = len(pcm) - len(pcm) % PCM_FRAME_BYTES
+        if complete_bytes != len(pcm):
+            logger.warning(
+                "Discarding partial PCM tail device=%s bytes=%d",
+                self.device_id, len(pcm) - complete_bytes,
+            )
+        for offset in range(0, complete_bytes, PCM_FRAME_BYTES):
+            await self._consume_audio_frame(pcm[offset:offset + PCM_FRAME_BYTES])
+
+    async def _consume_audio_frame(self, pcm: bytes) -> None:
         if self.state not in {"WAKE_WORD", "LISTENING"} or self.pipeline_task is not None:
             return
         energy = pcm_signal_rms(pcm)
