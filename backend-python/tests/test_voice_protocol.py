@@ -36,6 +36,9 @@ class VoiceProtocolTests(unittest.TestCase):
     def test_dom_protocol_remains_pcm_v3(self):
         validate_dom_hello({"type": "hello", "version": 3, "audio_params": {"codec": "pcm", "sample_rate": 16000, "channels": 1, "frame_duration": 60}})
 
+    def test_dom_protocol_accepts_xiaozhi_style_opus_uplink(self):
+        validate_dom_hello({"type": "hello", "version": 3, "audio_params": {"codec": "opus", "sample_rate": 16000, "channels": 1, "frame_duration": 60}})
+
     def test_vad_constants_match_sixty_millisecond_frames(self):
         self.assertEqual(PCM_FRAME_BYTES, 1920)
         self.assertEqual(VAD_ENERGY_THRESHOLD, 180)

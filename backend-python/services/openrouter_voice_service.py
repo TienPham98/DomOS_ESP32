@@ -179,12 +179,16 @@ def effective_wake_stt_timeout() -> float:
 
 
 def validate_dom_hello(message: dict[str, Any]) -> None:
-    expected = {"codec": "pcm", "sample_rate": 16_000, "channels": 1, "frame_duration": 60}
     audio = message.get("audio_params")
     if message.get("type") != "hello" or message.get("version") != 3:
         raise ValueError("Expected Dom Voice Protocol v3 hello")
-    if not isinstance(audio, dict) or any(audio.get(key) != value for key, value in expected.items()):
-        raise ValueError("Unsupported Dom PCM audio parameters")
+    expected = {"sample_rate": 16_000, "channels": 1, "frame_duration": 60}
+    if (
+        not isinstance(audio, dict)
+        or audio.get("codec") not in {"pcm", "opus"}
+        or any(audio.get(key) != value for key, value in expected.items())
+    ):
+        raise ValueError("Unsupported Dom audio parameters")
 
 
 def pcm_rms(pcm: bytes) -> int:
@@ -407,6 +411,10 @@ class VoiceSession:
         self.session_id = session_id
         self.state = "IDLE"
         self.local_vad = False  # Explicitly negotiated; old firmware keeps RMS VAD.
+        self.audio_codec = "pcm"
+        self.pcm_ingress = bytearray()
+        self.opus_decoder: av.AudioCodecContext | None = None
+        self.opus_resampler: av.AudioResampler | None = None
         self.send_lock = asyncio.Lock()
         self.pre_roll: deque[bytes] = deque(maxlen=VAD_PRE_ROLL_FRAMES)
         self.noise_samples: deque[int] = deque(maxlen=50)
@@ -457,6 +465,9 @@ class VoiceSession:
         self.speech_energy_total = 0
         self.start_candidate_frames = 0
         self.capture_threshold = VAD_ENERGY_THRESHOLD
+        self.pcm_ingress.clear()
+        self.opus_decoder = None
+        self.opus_resampler = None
 
     def vad_threshold(self) -> int:
         if len(self.noise_samples) < VAD_CALIBRATION_FRAMES:
@@ -511,21 +522,68 @@ class VoiceSession:
         except asyncio.CancelledError:
             pass
 
-    async def consume_audio(self, pcm: bytes) -> None:
-        """Consume one or more complete 60 ms PCM frames.
-
-        The ESP32 coalesces adjacent frames into a single WebSocket message to
-        amortize TLS latency. Keep VAD timing frame-based by splitting that
-        transport message at the protocol boundary before processing it.
-        """
-        complete_bytes = len(pcm) - len(pcm) % PCM_FRAME_BYTES
-        if complete_bytes != len(pcm):
-            logger.warning(
-                "Discarding partial PCM tail device=%s bytes=%d",
-                self.device_id, len(pcm) - complete_bytes,
+    def _decode_opus_packet(self, packet: bytes) -> bytes:
+        if self.opus_decoder is None:
+            self.opus_decoder = av.CodecContext.create("opus", "r")
+            self.opus_resampler = av.AudioResampler(
+                format="s16", layout="mono", rate=PCM_SAMPLE_RATE
             )
-        for offset in range(0, complete_bytes, PCM_FRAME_BYTES):
-            await self._consume_audio_frame(pcm[offset:offset + PCM_FRAME_BYTES])
+        output = bytearray()
+        decoded_frames = self.opus_decoder.decode(av.Packet(packet))
+        for decoded in decoded_frames:
+            frames = self.opus_resampler.resample(decoded) if self.opus_resampler else []
+            if not isinstance(frames, list):
+                frames = [frames]
+            for frame in frames or []:
+                output.extend(bytes(frame.planes[0])[:frame.samples * PCM_SAMPLE_WIDTH])
+        return bytes(output)
+
+    async def _drain_pcm_ingress(self, *, pad_tail: bool = False) -> None:
+        while len(self.pcm_ingress) >= PCM_FRAME_BYTES:
+            frame = bytes(self.pcm_ingress[:PCM_FRAME_BYTES])
+            del self.pcm_ingress[:PCM_FRAME_BYTES]
+            await self._consume_audio_frame(frame)
+        if pad_tail and self.pcm_ingress:
+            frame = bytes(self.pcm_ingress).ljust(PCM_FRAME_BYTES, b"\0")
+            self.pcm_ingress.clear()
+            await self._consume_audio_frame(frame)
+
+    async def consume_audio(self, payload: bytes) -> None:
+        """Decode one transport packet and preserve 60 ms VAD boundaries."""
+        if self.audio_codec == "opus":
+            try:
+                pcm = self._decode_opus_packet(payload)
+            except Exception as exc:
+                logger.warning("Invalid Opus packet device=%s: %s", self.device_id, exc)
+                return
+        else:
+            pcm = payload
+        self.pcm_ingress.extend(pcm)
+        await self._drain_pcm_ingress()
+
+    async def flush_audio_transport(self) -> None:
+        """Flush the decoder tail before honoring the device VAD stop."""
+        if self.audio_codec == "opus" and self.opus_decoder is not None:
+            output = bytearray()
+            try:
+                for decoded in self.opus_decoder.decode(None):
+                    frames = self.opus_resampler.resample(decoded) if self.opus_resampler else []
+                    if not isinstance(frames, list):
+                        frames = [frames]
+                    for frame in frames or []:
+                        output.extend(bytes(frame.planes[0])[:frame.samples * PCM_SAMPLE_WIDTH])
+                if self.opus_resampler is not None:
+                    frames = self.opus_resampler.resample(None) or []
+                    if not isinstance(frames, list):
+                        frames = [frames]
+                    for frame in frames:
+                        output.extend(bytes(frame.planes[0])[:frame.samples * PCM_SAMPLE_WIDTH])
+            except Exception as exc:
+                # A malformed final packet must not prevent the captured command
+                # from reaching STT; all complete frames are already buffered.
+                logger.warning("Unable to flush Opus tail device=%s: %s", self.device_id, exc)
+            self.pcm_ingress.extend(output)
+        await self._drain_pcm_ingress(pad_tail=True)
 
     async def _consume_audio_frame(self, pcm: bytes) -> None:
         if self.state not in {"WAKE_WORD", "LISTENING"} or self.pipeline_task is not None:
@@ -1655,6 +1713,7 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         validate_dom_hello(hello)
         features = hello.get("features")
         session.local_vad = isinstance(features, dict) and features.get("local_vad") is True
+        session.audio_codec = hello["audio_params"]["codec"]
         await voice_registry.add(session)
         await session.send_json({
             "type": "hello", "provider": primary_llm_provider(), "transport": "websocket",
@@ -1695,6 +1754,7 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
                     else:
                         await session.set_listening()
             elif message_type == "listen" and message.get("state") == "stop":
+                await session.flush_audio_transport()
                 await session.start_pipeline()
             elif message_type == "abort":
                 await session.abort()
