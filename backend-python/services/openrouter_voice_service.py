@@ -1700,6 +1700,15 @@ def _decode_mp3(mp3: bytes) -> bytes:
     return bytes(output)
 
 
+def _schedule_device_data(session: VoiceSession, resource: str, force: bool = False) -> None:
+    task = asyncio.create_task(
+        _send_device_data(session, resource, force),
+        name=f"device-data-{resource}-{session.session_id}",
+    )
+    session.data_tasks.add(task)
+    task.add_done_callback(session.data_tasks.discard)
+
+
 async def handle_openrouter_voice(websocket: WebSocket) -> None:
     await websocket.accept()
     authorization = websocket.headers.get("authorization", "")
@@ -1728,6 +1737,10 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         heartbeat_task = asyncio.create_task(
             voice_heartbeat_loop(session), name=f"voice-heartbeat-{session_id}"
         )
+        # Warm the board cache on every connection. Older firmware safely
+        # ignores the data messages; current firmware displays them instantly.
+        _schedule_device_data(session, "football")
+        _schedule_device_data(session, "codex")
         logger.info("Cloud voice connected device=%s provider=%s session=%s", device_id, primary_llm_provider(), session_id)
         while True:
             receive_task = asyncio.create_task(websocket.receive())
@@ -1766,12 +1779,7 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
             elif message_type == "data":
                 resource = message.get("resource")
                 if resource in {"football", "codex"}:
-                    task = asyncio.create_task(
-                        _send_device_data(session, resource, message.get("force") is True),
-                        name=f"device-data-{resource}-{session_id}",
-                    )
-                    session.data_tasks.add(task)
-                    task.add_done_callback(session.data_tasks.discard)
+                    _schedule_device_data(session, resource, message.get("force") is True)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     except (ValueError, json.JSONDecodeError) as exc:
@@ -1791,10 +1799,11 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         for future in session.pending_mcp.values():
             if not future.done():
                 future.cancel()
-        for task in session.data_tasks:
+        data_tasks = tuple(session.data_tasks)
+        for task in data_tasks:
             task.cancel()
-        if session.data_tasks:
-            await asyncio.gather(*session.data_tasks, return_exceptions=True)
+        if data_tasks:
+            await asyncio.gather(*data_tasks, return_exceptions=True)
         await voice_registry.remove(session_id)
         logger.info("Cloud voice disconnected device=%s", device_id)
 
