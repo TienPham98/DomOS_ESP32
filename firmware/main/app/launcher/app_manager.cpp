@@ -228,14 +228,28 @@ public:
     }
     void Show() override
     {
-        lv_scr_load(screen_);
-        ShowAutoHideControls();
+        LoadScreen(true);
     }
     void Hide() override {}
     void OnUserInteraction() override { ShowAutoHideControls(); }
 
 protected:
     static constexpr uint32_t kControlsVisibleMs = 2000;
+
+    void LoadScreen(bool reveal_controls)
+    {
+        lv_scr_load(screen_);
+        if (reveal_controls) {
+            ShowAutoHideControls();
+            return;
+        }
+        for (size_t i = 0; i < control_count_; ++i) {
+            if (controls_[i] != nullptr) {
+                lv_obj_add_flag(controls_[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (controls_timer_ != nullptr) lv_timer_pause(controls_timer_);
+    }
 
     void AddAutoHideControl(lv_obj_t *control)
     {
@@ -1356,17 +1370,17 @@ public:
 
     void Show() override
     {
-        ShowCached();
-        StartRefresh(false);
+        ShowForTracking(true, true);
     }
 
     void Hide() override { visible_ = false; }
 
-    void ShowCached()
+    void ShowForTracking(bool refresh, bool reveal_controls)
     {
         visible_ = true;
-        ScreenApp::Show();
+        LoadScreen(reveal_controls);
         RenderCache();
+        if (refresh) StartRefresh(false);
     }
 
     void OnRemoteData(bool ok)
@@ -1513,17 +1527,17 @@ public:
 
     void Show() override
     {
-        ShowCached();
-        StartRefresh(false);
+        ShowForTracking(true, true);
     }
 
     void Hide() override { visible_ = false; }
 
-    void ShowCached()
+    void ShowForTracking(bool refresh, bool reveal_controls)
     {
         visible_ = true;
-        ScreenApp::Show();
+        LoadScreen(reveal_controls);
         RenderCache();
+        if (refresh) StartRefresh(false);
     }
 
     void OnRemoteData(bool ok)
@@ -1750,19 +1764,18 @@ private:
         CodexCredit,
     };
 
-    static constexpr uint32_t kRotationPeriodMs = 10U * 1000U;
+    static constexpr uint32_t kRotationPeriodMs = 15U * 1000U;
 
-    void ShowActiveView()
+    void ShowActiveView(bool reveal_controls = true)
     {
         const size_t index = active_view_ == View::ManchesterUnited ? 0U : 1U;
+        const bool refresh = !refreshed_[index];
         if (active_view_ == View::ManchesterUnited) {
             codex_credit_.Hide();
-            if (refreshed_[index]) man_utd_.ShowCached();
-            else man_utd_.Show();
+            man_utd_.ShowForTracking(refresh, reveal_controls);
         } else {
             man_utd_.Hide();
-            if (refreshed_[index]) codex_credit_.ShowCached();
-            else codex_credit_.Show();
+            codex_credit_.ShowForTracking(refresh, reveal_controls);
         }
         refreshed_[index] = true;
     }
@@ -1771,7 +1784,9 @@ private:
     {
         active_view_ = active_view_ == View::ManchesterUnited
             ? View::CodexCredit : View::ManchesterUnited;
-        ShowActiveView();
+        // Automatic rotation must not reveal navigation controls again. They
+        // remain available on the next deliberate screen touch.
+        ShowActiveView(false);
     }
 
     ManchesterUnitedApp man_utd_;

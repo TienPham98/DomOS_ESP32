@@ -18,11 +18,12 @@ class TrackingStatusAppTests(unittest.TestCase):
         self.assertNotIn('static ManchesterUnitedApp man_utd(*this)', APP_SOURCE)
         self.assertNotIn('static CodexCreditApp codex_credit(*this)', APP_SOURCE)
 
-    def test_views_rotate_every_ten_seconds(self):
-        self.assertIn("kRotationPeriodMs = 10U * 1000U", APP_SOURCE)
+    def test_views_rotate_every_fifteen_seconds_without_revealing_controls(self):
+        self.assertIn("kRotationPeriodMs = 15U * 1000U", APP_SOURCE)
         self.assertIn("app->ShowNextView()", APP_SOURCE)
-        self.assertIn("man_utd_.ShowCached()", APP_SOURCE)
-        self.assertIn("codex_credit_.ShowCached()", APP_SOURCE)
+        self.assertIn("ShowActiveView(false)", APP_SOURCE)
+        self.assertIn("man_utd_.ShowForTracking(refresh, reveal_controls)", APP_SOURCE)
+        self.assertIn("codex_credit_.ShowForTracking(refresh, reveal_controls)", APP_SOURCE)
 
     def test_old_voice_app_ids_route_to_merged_app(self):
         self.assertIn(

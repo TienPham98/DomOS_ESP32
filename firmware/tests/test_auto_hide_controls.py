@@ -26,6 +26,12 @@ class AutoHideControlsTests(unittest.TestCase):
         self.assertIn("man_utd_.OnUserInteraction()", APP_SOURCE)
         self.assertIn("codex_credit_.OnUserInteraction()", APP_SOURCE)
 
+    def test_tracking_rotation_keeps_controls_hidden_and_uses_fifteen_seconds(self):
+        self.assertIn("kRotationPeriodMs = 15U * 1000U", APP_SOURCE)
+        self.assertIn("ShowActiveView(false)", APP_SOURCE)
+        self.assertIn("LoadScreen(reveal_controls)", APP_SOURCE)
+        self.assertIn("lv_timer_pause(controls_timer_)", APP_SOURCE)
+
 
 if __name__ == "__main__":
     unittest.main()
