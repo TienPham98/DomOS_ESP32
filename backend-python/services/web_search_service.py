@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import logging
 import re
+import socket
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -82,6 +85,45 @@ class _DuckDuckGoParser(HTMLParser):
             self.capture = ""
 
 
+class _ReadableTextParser(HTMLParser):
+    """Extract compact visible text from a search result page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._ignored_depth = 0
+
+    def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style", "svg", "noscript"}:
+            self._ignored_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "svg", "noscript"} and self._ignored_depth:
+            self._ignored_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._ignored_depth and data.strip():
+            self.parts.append(data.strip())
+
+    def text(self, limit: int = 6000) -> str:
+        return plain_speech_text(" ".join(self.parts))[:limit]
+
+
+def _is_public_result_url(url: str) -> bool:
+    """Reject obvious local/private targets before fetching search result pages."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname == "localhost" or hostname.endswith((".local", ".internal")):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return True
+    return address.is_global
+
+
 class WebSearchService:
     async def search(self, query: str) -> dict[str, Any]:
         query = plain_speech_text(query).strip()
@@ -102,7 +144,63 @@ class WebSearchService:
             results = await self._duckduckgo(query)
         else:
             raise RuntimeError("web search is disabled")
+        if "gia vang" in fold_vietnamese(query):
+            # The first focused SJC result normally contains the complete quote.
+            # Fetching more pages adds several seconds without improving the answer.
+            results = await self._enrich_results(results, limit=1)
         return {"query": query, "provider": provider, "results": results[:settings.WEB_SEARCH_MAX_RESULTS]}
+
+    async def _enrich_results(
+        self,
+        results: list[dict[str, str]],
+        *,
+        limit: int,
+    ) -> list[dict[str, str]]:
+        """Fetch a few result pages when snippets do not contain complete prices."""
+        selected = results[:limit]
+        details = await asyncio.gather(
+            *(self._fetch_result_text(item.get("url", "")) for item in selected),
+            return_exceptions=True,
+        )
+        enriched: list[dict[str, str]] = []
+        for item, detail in zip(selected, details):
+            copy = dict(item)
+            if isinstance(detail, str) and detail:
+                copy["content"] = detail
+            enriched.append(copy)
+        enriched.extend(results[limit:])
+        return enriched
+
+    async def _fetch_result_text(self, url: str) -> str:
+        if not _is_public_result_url(url):
+            return ""
+        # Resolve once and reject private answers. This is a defence-in-depth
+        # guard for URLs returned by third-party search providers.
+        host = urlparse(url).hostname or ""
+        try:
+            resolved = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        except OSError:
+            return ""
+        if not resolved or any(
+            not ipaddress.ip_address(entry[4][0]).is_global for entry in resolved
+        ):
+            return ""
+        try:
+            async with httpx.AsyncClient(
+                timeout=min(float(settings.WEB_SEARCH_TIMEOUT_SEC), 3.0),
+                follow_redirects=False,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; DomOS-Voice-Gateway/1.0)"},
+            ) as client:
+                response = await client.get(url)
+            response.raise_for_status()
+            if "html" not in response.headers.get("content-type", "").lower():
+                return ""
+            parser = _ReadableTextParser()
+            parser.feed(response.text[:500_000])
+            return parser.text()
+        except (httpx.HTTPError, ValueError):
+            logger.debug("Could not enrich search result url=%s", url, exc_info=True)
+            return ""
 
     async def _tavily(self, query: str) -> list[dict[str, str]]:
         if not settings.TAVILY_API_KEY:
@@ -143,9 +241,16 @@ class WebSearchService:
         async with httpx.AsyncClient(
             timeout=settings.WEB_SEARCH_TIMEOUT_SEC,
             follow_redirects=True,
-            headers={"User-Agent": "DomOS-Voice-Gateway/1.0"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; DomOS-Voice-Gateway/1.0)"},
         ) as client:
-            response = await client.get(settings.WEB_SEARCH_BASE_URL, params={"q": query})
+            # DuckDuckGo's HTML endpoint currently returns a 202 anti-bot page
+            # for GET requests from cloud hosts. Its documented HTML form POST
+            # still returns the server-rendered result list that this parser
+            # consumes, without JavaScript or a local browser.
+            response = await client.post(
+                settings.WEB_SEARCH_BASE_URL,
+                data={"q": query, "kl": "vn-vi"},
+            )
         response.raise_for_status()
         parser = _DuckDuckGoParser()
         parser.feed(response.text)

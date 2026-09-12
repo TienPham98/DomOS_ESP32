@@ -10,13 +10,13 @@ from zoneinfo import ZoneInfo
 from config import settings
 from services.assistant_prompt import build_system_prompt
 from services.conversation_store import ConversationStore
-from services.openrouter_voice_service import VoiceSession
+from services.openrouter_voice_service import VoiceSession, _gold_quote_answer
 from services.text_normalization import (
     PunctuationChunker,
     filter_asr_transcript,
     normalize_tts_text,
 )
-from services.web_search_service import _DuckDuckGoParser, needs_web_search
+from services.web_search_service import WebSearchService, _DuckDuckGoParser, needs_web_search
 
 
 class FakeWebSocket:
@@ -64,7 +64,59 @@ class FakeStreamClient:
         return FakeStreamResponse(self.lines)
 
 
+class FakeSearchClient:
+    def __init__(self, captured):
+        self.captured = captured
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def post(self, url, **kwargs):
+        self.captured.update({"url": url, **kwargs})
+
+        class Response:
+            text = (
+                '<a class="result__a" href="https://example.com/gold">Giá vàng SJC</a>'
+                '<a class="result__snippet">Mua 143 triệu, bán 146 triệu.</a>'
+            )
+
+            def raise_for_status(self):
+                return None
+
+        return Response()
+
+    async def get(self, url, **kwargs):
+        self.captured.update({"detail_url": url, "detail_kwargs": kwargs})
+
+        class Response:
+            text = "<main>Giá mua 143 triệu. Giá bán 146 triệu đồng một lượng.</main>"
+            headers = {"content-type": "text/html; charset=utf-8"}
+
+            def raise_for_status(self):
+                return None
+
+        return Response()
+
+
 class VoiceIntelligenceUnitTests(unittest.TestCase):
+    def test_gold_quote_uses_latest_complete_source(self):
+        result = _gold_quote_answer([{
+            "title": "Giá vàng SJC",
+            "content": (
+                "Cập nhật lúc 16:48 ngày 12/09/2026. "
+                "Giá mua 143.000 nghìn đ/lượng. Giá bán 146.000 nghìn đ/lượng."
+            ),
+        }], datetime(2026, 9, 12, 17, 0, tzinfo=ZoneInfo("Asia/Bangkok")))
+
+        self.assertEqual(
+            result,
+            "Hôm nay là ngày 12 tháng 9 năm 2026. Giá vàng miếng SJC mua vào "
+            "143 triệu đồng và bán ra 146 triệu đồng một lượng, cập nhật lúc 16 giờ 48 phút.",
+        )
+
     def test_dynamic_prompt_contains_context_and_voice_rules(self):
         now = datetime(2026, 9, 9, 6, 40, tzinfo=ZoneInfo("Asia/Bangkok"))
         with patch.object(settings, "ASSISTANT_LOCATION", "Hà Nội"):
@@ -200,14 +252,9 @@ class VoiceIntelligenceAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_realtime_tool_executes_on_server_not_on_device(self):
         self.session.call_device_tool = AsyncMock()
-        self.session._llm = AsyncMock(side_effect=[
-            {"choices": [{"message": {"tool_calls": [{
-                "id": "search-1",
-                "type": "function",
-                "function": {"name": "web_search", "arguments": '{"query":"thời tiết Hà Nội hôm nay"}'},
-            }]}}]},
-            {"choices": [{"message": {"content": "Hà Nội hôm nay có mưa nhẹ."}}]},
-        ])
+        self.session._llm = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Hà Nội hôm nay có mưa nhẹ."}}]
+        })
         search_result = {
             "query": "thời tiết Hà Nội hôm nay",
             "provider": "duckduckgo",
@@ -222,8 +269,58 @@ class VoiceIntelligenceAsyncTests(unittest.IsolatedAsyncioTestCase):
         search.assert_awaited_once()
         self.session.call_device_tool.assert_not_awaited()
         first_payload = self.session._llm.await_args_list[0].args[0]
-        self.assertEqual(first_payload["tool_choice"]["function"]["name"], "web_search")
+        self.assertNotIn("tools", first_payload)
+        self.assertIn("Mưa nhẹ", first_payload["messages"][-2]["content"])
         self.assertEqual(self.trace.await_args.args[-1], "success")
+
+    async def test_duckduckgo_uses_html_form_post_instead_of_blocked_get(self):
+        captured = {}
+        with (
+            patch.object(settings, "WEB_SEARCH_PROVIDER", "duckduckgo"),
+            patch.object(settings, "WEB_SEARCH_BASE_URL", "https://example.invalid/search"),
+            patch(
+                "services.web_search_service.httpx.AsyncClient",
+                return_value=FakeSearchClient(captured),
+            ),
+            patch("services.web_search_service.socket.getaddrinfo", return_value=[
+                (None, None, None, None, ("93.184.216.34", 0)),
+            ]),
+        ):
+            result = await WebSearchService().search("giá vàng hôm nay")
+
+        self.assertEqual(captured["data"]["q"], "giá vàng hôm nay")
+        self.assertEqual(captured["data"]["kl"], "vn-vi")
+        self.assertEqual(result["results"][0]["snippet"], "Mua 143 triệu, bán 146 triệu.")
+        self.assertIn("Giá mua 143 triệu", result["results"][0]["content"])
+
+    async def test_realtime_answer_buffers_and_retries_spoken_tool_syntax(self):
+        streamed = AsyncMock()
+        self.session._llm = AsyncMock(side_effect=[
+            {"choices": [{"message": {"content": "websearch query giá vàng hôm nay"}}]},
+            {"choices": [{"message": {"content": "Vàng SJC mua 143 triệu, bán 146 triệu một lượng."}}]},
+        ])
+        search_result = {
+            "query": "giá vàng",
+            "provider": "duckduckgo",
+            "results": [{
+                "title": "Giá vàng SJC",
+                "url": "https://example.com",
+                "snippet": "Mua 143 triệu, bán 146 triệu đồng một lượng.",
+            }],
+        }
+        with patch(
+            "services.openrouter_voice_service.web_search_service.search",
+            AsyncMock(return_value=search_result),
+        ):
+            answer = await self.session.chat(
+                [], "Giá vàng hôm nay thế nào", "turn", on_text_delta=streamed
+            )
+
+        self.assertEqual(answer, "Vàng SJC mua 143 triệu, bán 146 triệu một lượng.")
+        self.assertEqual(self.session._llm.await_count, 2)
+        for invocation in self.session._llm.await_args_list:
+            self.assertIsNone(invocation.kwargs["on_text_delta"])
+        streamed.assert_not_awaited()
 
     async def test_pipeline_queues_first_clause_before_llm_finishes(self):
         released = asyncio.Event()
