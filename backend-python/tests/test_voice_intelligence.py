@@ -152,6 +152,52 @@ class VoiceIntelligenceAsyncTests(unittest.IsolatedAsyncioTestCase):
         )
         self.session._llm.assert_not_awaited()
 
+    async def test_social_fast_paths_are_immediate_and_natural(self):
+        self.session._llm = AsyncMock()
+
+        greeting = await self.session.chat([], "Xin chào Dom", "turn-greeting")
+        identity = await self.session.chat([], "Bạn là ai", "turn-identity")
+        thanks = await self.session.chat([], "Cảm ơn Dom nhé", "turn-thanks")
+
+        self.assertIn("Dom đây", greeting)
+        self.assertIn("trợ lý giọng nói", identity)
+        self.assertIn("Không có gì", thanks)
+        self.session._llm.assert_not_awaited()
+
+    async def test_general_chat_omits_tool_schemas_but_keeps_short_output_limit(self):
+        self.session._llm = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Mình nghĩ đây là một ý hay."}}]
+        })
+
+        answer = await self.session.chat([], "Bạn nghĩ sao về việc đọc sách", "turn")
+
+        self.assertEqual(answer, "Mình nghĩ đây là một ý hay.")
+        payload = self.session._llm.await_args.args[0]
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+        self.assertEqual(payload["max_tokens"], 180)
+
+    async def test_word_fragment_does_not_trigger_device_tool_schema(self):
+        self.session._llm = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Cá heo là loài động vật có vú."}}]
+        })
+
+        await self.session.chat([], "Cá heo là loài gì", "turn")
+
+        self.assertNotIn("tools", self.session._llm.await_args.args[0])
+
+    async def test_device_question_keeps_device_tools_available(self):
+        self.session._llm = AsyncMock(return_value={
+            "choices": [{"message": {"content": "Thiết bị đang hoạt động."}}]
+        })
+
+        await self.session.chat([], "Độ sáng hiện tại thế nào", "turn")
+
+        payload = self.session._llm.await_args.args[0]
+        names = {tool["function"]["name"] for tool in payload["tools"]}
+        self.assertIn("display.set_brightness", names)
+        self.assertIn("device.get_status", names)
+
     async def test_realtime_tool_executes_on_server_not_on_device(self):
         self.session.call_device_tool = AsyncMock()
         self.session._llm = AsyncMock(side_effect=[
@@ -248,6 +294,7 @@ class VoiceIntelligenceAsyncTests(unittest.IsolatedAsyncioTestCase):
             "name": "speaker.adjust_volume", "arguments": '{"delta":10}',
         })
         self.assertTrue(captured["json"]["stream"])
+        self.assertEqual(captured["timeout"], 5)
 
 
 if __name__ == "__main__":

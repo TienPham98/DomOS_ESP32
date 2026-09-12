@@ -439,6 +439,26 @@ class VoiceSession:
         self.provider_retry_after: dict[str, float] = {}
         self.last_llm_provider = "pending"
         self.last_llm_model = "pending"
+        # One voice session normally performs STT and LLM requests against the
+        # same API host. Reusing its client lets the LLM request reuse the TLS
+        # connection established by STT instead of paying another handshake.
+        self._http_client: httpx.AsyncClient | None = None
+
+    def http_client(self) -> httpx.AsyncClient:
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                limits=httpx.Limits(
+                    max_connections=8,
+                    max_keepalive_connections=4,
+                    keepalive_expiry=30.0,
+                )
+            )
+        return self._http_client
+
+    async def close(self) -> None:
+        client, self._http_client = self._http_client, None
+        if client is not None:
+            await client.aclose()
 
     def provider_ready(self, provider: str) -> bool:
         return time.monotonic() >= self.provider_retry_after.get(provider, 0.0)
@@ -889,16 +909,20 @@ class VoiceSession:
                 await self.set_wake_word(notify_board=True)
 
     async def process_transcript(self, transcript: str) -> None:
+        started = time.monotonic()
+        first_clause_ms: int | None = None
         turn_id = ""
         speech_queue: asyncio.Queue[str | None] = asyncio.Queue()
         chunker = PunctuationChunker()
         streamed_chunks = 0
 
         async def queue_delta(delta: str) -> None:
-            nonlocal streamed_chunks
+            nonlocal streamed_chunks, first_clause_ms
             for raw_chunk in chunker.feed(delta):
                 chunk = normalize_tts_text(raw_chunk)
                 if chunk:
+                    if first_clause_ms is None:
+                        first_clause_ms = round((time.monotonic() - started) * 1000)
                     streamed_chunks += 1
                     await speech_queue.put(chunk)
 
@@ -908,10 +932,17 @@ class VoiceSession:
         try:
             logger.info("STT device=%s text=%s", self.device_id, transcript)
             await self.send_json({"type": "stt", "text": transcript})
-            history = await conversation_store.recent_context(self.device_id)
-            turn_id = await conversation_store.create_turn(
-                self.device_id, transcript, "pending", "pending"
+            history_task = asyncio.create_task(
+                conversation_store.recent_context(
+                    self.device_id, settings.CONVERSATION_CONTEXT_TURNS
+                )
             )
+            turn_task = asyncio.create_task(
+                conversation_store.create_turn(
+                    self.device_id, transcript, "pending", "pending"
+                )
+            )
+            history, turn_id = await asyncio.gather(history_task, turn_task)
             answer = await self.chat(history, transcript, turn_id, on_text_delta=queue_delta)
             tail = normalize_tts_text(chunker.flush())
             if tail:
@@ -927,6 +958,14 @@ class VoiceSession:
             streamed = await speech_task
             if not streamed or streamed_chunks == 0:
                 await self.speak(answer)
+            logger.info(
+                "Voice turn complete device=%s provider=%s model=%s first_clause_ms=%s total_ms=%d",
+                self.device_id,
+                self.last_llm_provider,
+                self.last_llm_model,
+                first_clause_ms if first_clause_ms is not None else "direct",
+                round((time.monotonic() - started) * 1000),
+            )
         except asyncio.CancelledError:
             speech_task.cancel()
             await asyncio.gather(speech_task, return_exceptions=True)
@@ -953,12 +992,12 @@ class VoiceSession:
             "HTTP-Referer": settings.OPENROUTER_HTTP_REFERER,
             "X-Title": "DomOS",
         }
-        async with httpx.AsyncClient(timeout=settings.OPENROUTER_TIMEOUT_SEC) as client:
-            response = await client.post(
-                f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
+        response = await self.http_client().post(
+            f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=settings.OPENROUTER_TIMEOUT_SEC,
+        )
         if response.is_error:
             try:
                 error = response.json().get("error") or {}
@@ -975,12 +1014,12 @@ class VoiceSession:
             "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=settings.OPENAI_TIMEOUT_SEC) as client:
-            response = await client.post(
-                f"{settings.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
+        response = await self.http_client().post(
+            f"{settings.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=settings.OPENAI_TIMEOUT_SEC,
+        )
         if response.is_error:
             raise _openai_api_error(response, "chat")
         return response.json()
@@ -999,56 +1038,59 @@ class VoiceSession:
         content_parts: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream(
-                "POST", url, headers=headers, json={**payload, "stream": True}
-            ) as response:
-                if response.is_error:
-                    await response.aread()
-                    if provider == "openai":
-                        raise _openai_api_error(response, "chat")
-                    try:
-                        error = response.json().get("error") or {}
-                        detail = f"{error.get('code', 'unknown')}: {error.get('message', 'request failed')}"
-                    except (ValueError, AttributeError):
-                        detail = "request failed"
-                    raise RuntimeError(f"OpenRouter HTTP {response.status_code}: {detail}")
+        async with self.http_client().stream(
+            "POST",
+            url,
+            headers=headers,
+            json={**payload, "stream": True},
+            timeout=timeout,
+        ) as response:
+            if response.is_error:
+                await response.aread()
+                if provider == "openai":
+                    raise _openai_api_error(response, "chat")
+                try:
+                    error = response.json().get("error") or {}
+                    detail = f"{error.get('code', 'unknown')}: {error.get('message', 'request failed')}"
+                except (ValueError, AttributeError):
+                    detail = "request failed"
+                raise RuntimeError(f"OpenRouter HTTP {response.status_code}: {detail}")
 
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        event = json.loads(data)
-                    except json.JSONDecodeError:
-                        logger.debug("Ignoring malformed %s SSE event", provider)
-                        continue
-                    choices = event.get("choices") or []
-                    if not choices:
-                        continue
-                    choice = choices[0]
-                    finish_reason = choice.get("finish_reason") or finish_reason
-                    delta = choice.get("delta") or {}
-                    text_delta = delta.get("content")
-                    if isinstance(text_delta, str) and text_delta:
-                        content_parts.append(text_delta)
-                        await on_text_delta(text_delta)
-                    for raw_call in delta.get("tool_calls") or []:
-                        index = int(raw_call.get("index", 0))
-                        call = tool_calls.setdefault(index, {
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        })
-                        if raw_call.get("id"):
-                            call["id"] += str(raw_call["id"])
-                        if raw_call.get("type"):
-                            call["type"] = raw_call["type"]
-                        function = raw_call.get("function") or {}
-                        call["function"]["name"] += str(function.get("name") or "")
-                        call["function"]["arguments"] += str(function.get("arguments") or "")
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    logger.debug("Ignoring malformed %s SSE event", provider)
+                    continue
+                choices = event.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = choice.get("delta") or {}
+                text_delta = delta.get("content")
+                if isinstance(text_delta, str) and text_delta:
+                    content_parts.append(text_delta)
+                    await on_text_delta(text_delta)
+                for raw_call in delta.get("tool_calls") or []:
+                    index = int(raw_call.get("index", 0))
+                    call = tool_calls.setdefault(index, {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    })
+                    if raw_call.get("id"):
+                        call["id"] += str(raw_call["id"])
+                    if raw_call.get("type"):
+                        call["type"] = raw_call["type"]
+                    function = raw_call.get("function") or {}
+                    call["function"]["name"] += str(function.get("name") or "")
+                    call["function"]["arguments"] += str(function.get("arguments") or "")
 
         message: dict[str, Any] = {
             "role": "assistant",
@@ -1282,13 +1324,13 @@ class VoiceSession:
             "response_format": "json",
             "prompt": "Câu nói có thể bắt đầu bằng wake word 'Hey Dom', sau đó là lệnh tiếng Việt.",
         }
-        async with httpx.AsyncClient(timeout=settings.OPENAI_TIMEOUT_SEC) as client:
-            response = await client.post(
-                f"{settings.OPENAI_BASE_URL.rstrip('/')}/audio/transcriptions",
-                headers=headers,
-                files=files,
-                data=data,
-            )
+        response = await self.http_client().post(
+            f"{settings.OPENAI_BASE_URL.rstrip('/')}/audio/transcriptions",
+            headers=headers,
+            files=files,
+            data=data,
+            timeout=settings.OPENAI_TIMEOUT_SEC,
+        )
         if response.is_error:
             raise _openai_api_error(response, "STT")
         return filter_asr_transcript(_clean_text(response.json().get("text")))
@@ -1327,17 +1369,30 @@ class VoiceSession:
             ],
             {"role": "user", "content": transcript},
         ]
-        force_search = needs_web_search(transcript)
+        folded = fold_vietnamese(transcript)
+        device_context = any(re.search(rf"\b{re.escape(keyword)}\b", folded) for keyword in (
+            "am luong", "loa", "do sang", "man hinh", "pin", "wifi", "mang",
+            "thiet bi", "ung dung", "wallpaper", "dong ho", "tracking", "codex",
+        ))
+        # "Hiện tại" normally requests fresh web data, but in a device-status
+        # question it must query the board rather than search the Internet.
+        force_search = needs_web_search(transcript) and not device_context
+        available_tools = (
+            [tool for tool in TOOLS if tool["function"]["name"] == "web_search"]
+            if force_search else TOOLS if device_context else []
+        )
         for round_index in range(3):
             payload = {
                 "messages": messages,
-                "tools": TOOLS,
-                "tool_choice": (
+                "temperature": 0.3,
+                "max_tokens": 180,
+            }
+            if available_tools:
+                payload["tools"] = available_tools
+                payload["tool_choice"] = (
                     {"type": "function", "function": {"name": "web_search"}}
                     if force_search and round_index == 0 else "auto"
-                ),
-                "temperature": 0.3,
-            }
+                )
             response = (
                 await self._llm(payload, on_text_delta=on_text_delta)
                 if on_text_delta is not None else await self._llm(payload)
@@ -1419,6 +1474,19 @@ class VoiceSession:
         response_kind = ""
         number_match = re.search(r"\b(100|[1-9]?\d)\b", text)
         number = int(number_match.group(1)) if number_match else None
+
+        # Common social turns do not need a cloud round-trip. These responses
+        # also give Dom a consistent, natural Vietnamese voice.
+        if re.fullmatch(r"(?:xin )?chao(?: dom)?|hello(?: dom)?|hi(?: dom)?", text):
+            return "Chào bạn, Dom đây. Mình có thể giúp gì cho bạn?"
+        if re.fullmatch(r"cam on(?: dom| ban)?(?: nhe)?", text):
+            return "Không có gì, mình luôn sẵn sàng giúp bạn."
+        if re.search(r"\b(?:ban la ai|ban ten gi|ten cua ban la gi)\b", text):
+            return "Mình là Dom, trợ lý giọng nói của DomOS."
+        if re.search(r"\b(?:dom oi|hey dom|dom)\b", text) and len(text.split()) <= 2:
+            return "Mình đây, bạn cần gì nào?"
+        if re.search(r"\bban (?:co the )?lam duoc gi\b", text):
+            return "Mình có thể trò chuyện, tra cứu thông tin và điều khiển các chức năng của DomOS."
 
         app = requested_app(transcript)
         if app is not None:
@@ -1805,6 +1873,8 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         if data_tasks:
             await asyncio.gather(*data_tasks, return_exceptions=True)
         await voice_registry.remove(session_id)
+        with contextlib.suppress(Exception):
+            await session.close()
         logger.info("Cloud voice disconnected device=%s", device_id)
 
 

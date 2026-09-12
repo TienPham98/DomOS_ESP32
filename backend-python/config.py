@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     TTS_VOICE: str
     TTS_TIMEOUT_SEC: float
     CONVERSATION_DB_PATH: str = "data/conversations.db"
+    # Six completed turns retain short conversational context without sending
+    # an ever-growing voice transcript to the model on every request.
+    CONVERSATION_CONTEXT_TURNS: int = Field(default=6, ge=1, le=20)
     CORE_BACKEND_URL: str
 
     # "LOCAL" means a CLI on the gateway host, including a cloud container.
