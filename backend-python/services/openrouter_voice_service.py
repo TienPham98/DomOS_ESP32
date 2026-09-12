@@ -27,6 +27,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 from gtts import gTTS
 
 from config import settings
+from services.codex_usage_service import CodexUsageError, codex_usage_service
+from services.football_service import football_service
 from services.assistant_prompt import assistant_now, build_system_prompt
 from services.app_commands import (
     APP_COMMAND_HELP,
@@ -432,6 +434,7 @@ class VoiceSession:
         self.pipeline_task: asyncio.Task[None] | None = None
         self.activation_timeout_task: asyncio.Task[None] | None = None
         self.pending_mcp: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self.data_tasks: set[asyncio.Task[None]] = set()
         self.next_request_id = 1
         self.provider_retry_after: dict[str, float] = {}
         self.last_llm_provider = "pending"
@@ -1760,6 +1763,15 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
                 await session.abort()
             elif message_type == "mcp" and isinstance(message.get("payload"), dict):
                 session.resolve_mcp(message["payload"])
+            elif message_type == "data":
+                resource = message.get("resource")
+                if resource in {"football", "codex"}:
+                    task = asyncio.create_task(
+                        _send_device_data(session, resource, message.get("force") is True),
+                        name=f"device-data-{resource}-{session_id}",
+                    )
+                    session.data_tasks.add(task)
+                    task.add_done_callback(session.data_tasks.discard)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     except (ValueError, json.JSONDecodeError) as exc:
@@ -1779,8 +1791,37 @@ async def handle_openrouter_voice(websocket: WebSocket) -> None:
         for future in session.pending_mcp.values():
             if not future.done():
                 future.cancel()
+        for task in session.data_tasks:
+            task.cancel()
+        if session.data_tasks:
+            await asyncio.gather(*session.data_tasks, return_exceptions=True)
         await voice_registry.remove(session_id)
         logger.info("Cloud voice disconnected device=%s", device_id)
+
+
+async def _send_device_data(session: VoiceSession, resource: str, force: bool) -> None:
+    """Return small tracking payloads over the already authenticated voice socket."""
+    try:
+        if resource == "football":
+            payload = await football_service.get_schedule(force=force)
+        elif resource == "codex":
+            payload = await codex_usage_service.get_usage(force=force)
+        else:
+            return
+        await session.send_json({
+            "type": "data", "resource": resource, "ok": True, "payload": payload,
+        })
+    except asyncio.CancelledError:
+        raise
+    except (CodexUsageError, OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Device data unavailable resource=%s: %s", resource, exc)
+        try:
+            await session.send_json({
+                "type": "data", "resource": resource, "ok": False,
+                "error": str(exc)[:120],
+            })
+        except (RuntimeError, WebSocketDisconnect):
+            pass
 
 
 async def voice_heartbeat_loop(

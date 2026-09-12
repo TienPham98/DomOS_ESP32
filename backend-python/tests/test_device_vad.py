@@ -4,7 +4,9 @@ import unittest
 from array import array
 from unittest.mock import AsyncMock, patch
 
-from services.openrouter_voice_service import PCM_FRAME_BYTES, VoiceSession, handle_openrouter_voice
+from services.openrouter_voice_service import (
+    PCM_FRAME_BYTES, VoiceSession, _send_device_data, handle_openrouter_voice,
+)
 from config import settings
 
 
@@ -78,3 +80,30 @@ class DeviceVadTests(unittest.IsolatedAsyncioTestCase):
         session.local_vad = True
         await session.start_pipeline()
         self.assertIsNone(session.pipeline_task)
+
+    async def test_tracking_payload_uses_existing_voice_socket(self):
+        session = VoiceSession(None, "data-test", "session")
+        session.send_json = AsyncMock()
+        payload = {"next_match": {"home_team": "Manchester United"}, "stale": False}
+        with patch(
+            "services.openrouter_voice_service.football_service.get_schedule",
+            new=AsyncMock(return_value=payload),
+        ) as get_schedule:
+            await _send_device_data(session, "football", True)
+        get_schedule.assert_awaited_once_with(force=True)
+        session.send_json.assert_awaited_once_with({
+            "type": "data", "resource": "football", "ok": True, "payload": payload,
+        })
+
+    async def test_tracking_payload_reports_service_failure(self):
+        session = VoiceSession(None, "data-test", "session")
+        session.send_json = AsyncMock()
+        with patch(
+            "services.openrouter_voice_service.codex_usage_service.get_usage",
+            new=AsyncMock(side_effect=RuntimeError("temporary failure")),
+        ):
+            await _send_device_data(session, "codex", False)
+        message = session.send_json.await_args.args[0]
+        self.assertEqual(message["type"], "data")
+        self.assertEqual(message["resource"], "codex")
+        self.assertIs(message["ok"], False)
