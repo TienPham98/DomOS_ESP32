@@ -52,9 +52,6 @@ struct PendingWallpaperCommand {
     std::string name;
 };
 
-// Voice remains resident. Only one widget HTTP/LittleFS worker may consume
-// another internal-RAM stack at a time; the other app retries on its UI timer.
-std::atomic<bool> s_widget_fetch_busy{false};
 std::atomic<bool> s_wallpaper_command_busy{false};
 // HTTPS certificate verification overflows the old 4 KiB HTTP-only stack.
 // Widget downloads are serialized, so only one such internal stack is live.
@@ -883,6 +880,11 @@ static bool DecodeJpegFileToBuffer(const char *filepath)
 static bool DownloadUrlToFile(const std::string &url, const char *dest_path)
 {
     if (url.empty() || dest_path == nullptr) return false;
+    ESP_LOGI("http", "GET start %s (internal=%u largest=%u psram=%u)",
+             dest_path,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
     esp_http_client_config_t http_cfg{};
     http_cfg.url = url.c_str();
     http_cfg.timeout_ms = 10000;
@@ -891,6 +893,7 @@ static bool DownloadUrlToFile(const std::string &url, const char *dest_path)
     http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
     if (client == nullptr) {
+        ESP_LOGE("http", "Client init failed for %s", dest_path);
         AddSystemLog("ERROR", "http", "Client init failed (internal=%u, psram=%u): %s",
                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)), dest_path);
@@ -915,18 +918,23 @@ static bool DownloadUrlToFile(const std::string &url, const char *dest_path)
                 std::fclose(fp);
                 ok = (total > 0);
                 if (ok) {
+                    ESP_LOGI("http", "GET complete %s bytes=%d", dest_path, total);
                     AddSystemLog("INFO", "http", "Downloaded %d bytes: %s", total, dest_path);
                 } else {
+                    ESP_LOGW("http", "GET returned no body for %s", dest_path);
                     AddSystemLog("WARN", "http", "Downloaded 0 bytes: %s", dest_path);
                 }
             } else {
+                ESP_LOGE("http", "Cannot open %s for write", dest_path);
                 AddSystemLog("ERROR", "http", "Failed to open dest_path for write: %s", dest_path);
             }
         } else {
+            ESP_LOGE("http", "GET status=%d length=%d for %s", status_code, content_len, dest_path);
             AddSystemLog("ERROR", "http", "HTTP status=%d length=%d: %s",
                          status_code, content_len, dest_path);
         }
     } else {
+        ESP_LOGE("http", "GET open failed %s for %s", esp_err_to_name(err), dest_path);
         AddSystemLog("ERROR", "http", "HTTP GET failed (%s): %s", esp_err_to_name(err), dest_path);
     }
     esp_http_client_cleanup(client);
@@ -1361,110 +1369,30 @@ public:
         RenderCache();
     }
 
+    void OnRemoteData(bool ok)
+    {
+        refresh_running_ = false;
+        if (!visible_) return;
+        if (ok) RenderCache();
+        else lv_label_set_text(status_, "Offline - showing cached fixture");
+    }
+
 private:
-    struct FetchContext {
-        ManchesterUnitedApp *app;
-        bool force;
-    };
-
-    struct FetchResult {
-        ManchesterUnitedApp *app;
-        bool schedule_ok;
-    };
-
     static constexpr const char *kSchedulePath = "/littlefs/manutd_schedule.json";
-    static constexpr const char *kScheduleTempPath = "/littlefs/manutd_schedule.tmp";
     static constexpr const char *kBackgroundPath = "/littlefs/manutd_background_v2.jpg";
-    static constexpr const char *kBackgroundTempPath = "/littlefs/manutd_background.tmp";
 
     void StartRefresh(bool force)
     {
         bool expected = false;
         if (!refresh_running_.compare_exchange_strong(expected, true)) return;
-        if (CONFIG_DOMOS_AI_HTTP_BASE[0] == '\0') {
+        AssistantService *assistant = manager_.Assistant();
+        if (assistant == nullptr || !assistant->RequestData("football", force)) {
             refresh_running_ = false;
-            lv_label_set_text(status_, "Gateway URL not configured");
+            lv_label_set_text(status_, "Assistant connection offline");
             return;
         }
         lv_label_set_text(status_, force ? "Refreshing now..." : "Checking daily update...");
-        bool available = false;
-        if (!s_widget_fetch_busy.compare_exchange_strong(available, true)) {
-            refresh_running_ = false;
-            deferred_force_ = deferred_force_ || force;
-            lv_label_set_text(status_, "Waiting for other update...");
-            lv_timer_set_period(refresh_timer_, 1000);
-            return;
-        }
-        force = force || deferred_force_;
-        deferred_force_ = false;
         lv_timer_set_period(refresh_timer_, 60U * 60U * 1000U);
-        auto *context = new FetchContext{this, force};
-        // This task writes LittleFS. Its stack must remain in internal RAM
-        // because SPI flash operations temporarily disable the PSRAM cache.
-        if (xTaskCreatePinnedToCore(
-                FetchTask, "manutd_fetch", kWidgetFetchStackBytes, context, 3, nullptr, 0) != pdPASS) {
-            delete context;
-            s_widget_fetch_busy = false;
-            refresh_running_ = false;
-            deferred_force_ = force;
-            lv_timer_set_period(refresh_timer_, 1000);
-            lv_label_set_text(status_, "Unable to start update");
-            AddSystemLog("ERROR", "man-utd", "Fetch task create failed (internal=%u, psram=%u)",
-                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        }
-    }
-
-    static void FetchTask(void *data)
-    {
-        auto *context = static_cast<FetchContext *>(data);
-        auto *app = context->app;
-        const std::string base = CONFIG_DOMOS_AI_HTTP_BASE;
-        std::string schedule_url = base + "/api/football/manchester-united";
-        if (context->force) schedule_url += "?force=true";
-        delete context;
-
-        bool schedule_ok = DownloadUrlToFile(schedule_url, kScheduleTempPath);
-        if (schedule_ok) {
-            std::remove(kSchedulePath);
-            schedule_ok = std::rename(kScheduleTempPath, kSchedulePath) == 0;
-        } else {
-            std::remove(kScheduleTempPath);
-        }
-
-        struct stat background_stat{};
-        bool background_ok = stat(kBackgroundPath, &background_stat) == 0 && background_stat.st_size > 0;
-        if (!background_ok) {
-            background_ok = DownloadUrlToFile(
-                base + "/api/football/manchester-united/background.jpg", kBackgroundTempPath);
-            if (background_ok) {
-                std::remove(kBackgroundPath);
-                background_ok = std::rename(kBackgroundTempPath, kBackgroundPath) == 0;
-            } else {
-                std::remove(kBackgroundTempPath);
-            }
-        }
-
-        AddSystemLog(schedule_ok ? "INFO" : "WARN", "man-utd",
-                     "Refresh %s (stack free=%u)", schedule_ok ? "OK" : "failed",
-                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-        auto *result = new FetchResult{app, schedule_ok};
-        if (lv_async_call([](void *value) {
-                auto *completed = static_cast<FetchResult *>(value);
-                completed->app->refresh_running_ = false;
-                if (completed->app->visible_) {
-                    completed->app->RenderCache();
-                    if (!completed->schedule_ok) {
-                        lv_label_set_text(completed->app->status_, "Offline - showing cached fixture");
-                    }
-                }
-                delete completed;
-            }, result) != LV_RES_OK) {
-            app->refresh_running_ = false;
-            delete result;
-        }
-        s_widget_fetch_busy = false;
-        vTaskDelete(nullptr);
     }
 
     void RenderCache()
@@ -1525,7 +1453,6 @@ private:
     lv_obj_t *status_ = nullptr;
     lv_timer_t *refresh_timer_ = nullptr;
     std::atomic<bool> refresh_running_{false};
-    bool deferred_force_ = false;
     bool visible_ = false;
 };
 
@@ -1541,11 +1468,24 @@ public:
         lv_obj_set_style_bg_color(screen_, lv_color_hex(0x07111f), 0);
         lv_obj_clear_flag(screen_, LV_OBJ_FLAG_SCROLLABLE);
 
-        lv_obj_t *title = Label(screen_, "GENERAL USAGE LIMITS", LV_ALIGN_TOP_MID, 0, 7,
+        lv_obj_t *title = Label(screen_, "CODEX USAGE", LV_ALIGN_TOP_MID, 0, 7,
                                 &lv_font_montserrat_16);
         lv_obj_set_style_text_color(title, lv_color_hex(0x7dd3fc), 0);
-        CreateWindowCard(32, "5 HOUR", five_hour_percent_, five_hour_reset_, five_hour_bar_);
-        CreateWindowCard(111, "WEEKLY", weekly_percent_, weekly_reset_, weekly_bar_);
+        CreateWindowCard(6, "5 HOUR", five_hour_percent_, five_hour_reset_, five_hour_bar_);
+        CreateWindowCard(163, "WEEKLY", weekly_percent_, weekly_reset_, weekly_bar_);
+
+        lv_obj_t *reset_card = lv_obj_create(screen_);
+        lv_obj_set_size(reset_card, 308, 57);
+        lv_obj_align(reset_card, LV_ALIGN_TOP_MID, 0, 119);
+        StyleCard(reset_card);
+        lv_obj_t *reset_heading = Label(reset_card, "FULL RESET", LV_ALIGN_TOP_LEFT, 0, -2,
+                                        &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(reset_heading, lv_color_hex(0xfbbf24), 0);
+        reset_title_ = Label(reset_card, "Weekly + 5 hr", LV_ALIGN_BOTTOM_LEFT, 0, 1,
+                             &lv_font_montserrat_14);
+        reset_expiry_ = Label(reset_card, "--", LV_ALIGN_BOTTOM_RIGHT, 0, 1,
+                              &lv_font_montserrat_14);
+        lv_obj_set_style_text_color(reset_expiry_, lv_color_hex(0xcbd5e1), 0);
 
         status_ = Label(screen_, "Waiting for usage data", LV_ALIGN_BOTTOM_MID, 0, -33,
                         &lv_font_montserrat_14);
@@ -1586,19 +1526,16 @@ public:
         RenderCache();
     }
 
+    void OnRemoteData(bool ok)
+    {
+        refresh_running_ = false;
+        if (!visible_) return;
+        if (ok) RenderCache();
+        else lv_label_set_text(status_, "Offline - cached usage");
+    }
+
 private:
-    struct FetchContext {
-        CodexCreditApp *app;
-        bool force;
-    };
-
-    struct FetchResult {
-        CodexCreditApp *app;
-        bool ok;
-    };
-
     static constexpr const char *kUsagePath = "/littlefs/codex_usage.json";
-    static constexpr const char *kUsageTempPath = "/littlefs/codex_usage.tmp";
 
     static void StyleCard(lv_obj_t *card)
     {
@@ -1611,13 +1548,12 @@ private:
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     }
 
-    void CreateWindowCard(int y, const char *heading, lv_obj_t *&percent,
+    void CreateWindowCard(int x, const char *heading, lv_obj_t *&percent,
                           lv_obj_t *&reset, lv_obj_t *&bar)
     {
         lv_obj_t *card = lv_obj_create(screen_);
-        // Full-width rows keep reset dates readable on the 320x240 display.
-        lv_obj_set_size(card, 308, 74);
-        lv_obj_align(card, LV_ALIGN_TOP_MID, 0, y);
+        lv_obj_set_size(card, 151, 78);
+        lv_obj_align(card, LV_ALIGN_TOP_LEFT, x, 34);
         StyleCard(card);
         lv_obj_t *heading_label = Label(card, heading, LV_ALIGN_TOP_LEFT, 0, -2,
                                         &lv_font_montserrat_14);
@@ -1626,7 +1562,7 @@ private:
                         &lv_font_montserrat_14);
         lv_obj_set_style_text_color(percent, lv_color_white(), 0);
         bar = lv_bar_create(card);
-        lv_obj_set_size(bar, 292, 8);
+        lv_obj_set_size(bar, 135, 8);
         lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 28);
         lv_bar_set_range(bar, 0, 100);
         lv_bar_set_value(bar, 0, LV_ANIM_OFF);
@@ -1641,74 +1577,14 @@ private:
     {
         bool expected = false;
         if (!refresh_running_.compare_exchange_strong(expected, true)) return;
-        if (CONFIG_DOMOS_AI_HTTP_BASE[0] == '\0') {
+        AssistantService *assistant = manager_.Assistant();
+        if (assistant == nullptr || !assistant->RequestData("codex", force)) {
             refresh_running_ = false;
-            lv_label_set_text(status_, "Gateway URL not configured");
+            lv_label_set_text(status_, "Assistant connection offline");
             return;
         }
         lv_label_set_text(status_, force ? "Refreshing..." : "Checking usage...");
-        bool available = false;
-        if (!s_widget_fetch_busy.compare_exchange_strong(available, true)) {
-            refresh_running_ = false;
-            deferred_force_ = deferred_force_ || force;
-            lv_label_set_text(status_, "Waiting for other update...");
-            lv_timer_set_period(refresh_timer_, 1000);
-            return;
-        }
-        force = force || deferred_force_;
-        deferred_force_ = false;
         lv_timer_set_period(refresh_timer_, 60U * 1000U);
-        auto *context = new FetchContext{this, force};
-        // This task writes LittleFS. Its stack must remain in internal RAM
-        // because SPI flash operations temporarily disable the PSRAM cache.
-        if (xTaskCreatePinnedToCore(
-                FetchTask, "codex_fetch", kWidgetFetchStackBytes, context, 3, nullptr, 0) != pdPASS) {
-            delete context;
-            s_widget_fetch_busy = false;
-            refresh_running_ = false;
-            deferred_force_ = force;
-            lv_timer_set_period(refresh_timer_, 1000);
-            lv_label_set_text(status_, "Unable to start refresh");
-            AddSystemLog("ERROR", "codex", "Fetch task create failed (internal=%u, psram=%u)",
-                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-        }
-    }
-
-    static void FetchTask(void *data)
-    {
-        auto *context = static_cast<FetchContext *>(data);
-        CodexCreditApp *app = context->app;
-        std::string url = std::string(CONFIG_DOMOS_AI_HTTP_BASE) + "/api/codex/usage";
-        if (context->force) url += "?force=true";
-        delete context;
-
-        bool ok = DownloadUrlToFile(url, kUsageTempPath);
-        if (ok) {
-            std::remove(kUsagePath);
-            ok = std::rename(kUsageTempPath, kUsagePath) == 0;
-        } else {
-            std::remove(kUsageTempPath);
-        }
-
-        AddSystemLog(ok ? "INFO" : "WARN", "codex",
-                     "Refresh %s (stack free=%u)", ok ? "OK" : "failed",
-                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-        auto *result = new FetchResult{app, ok};
-        if (lv_async_call([](void *value) {
-                auto *completed = static_cast<FetchResult *>(value);
-                completed->app->refresh_running_ = false;
-                if (completed->app->visible_) {
-                    if (completed->ok) completed->app->RenderCache();
-                    else lv_label_set_text(completed->app->status_, "Offline - cached usage");
-                }
-                delete completed;
-            }, result) != LV_RES_OK) {
-            app->refresh_running_ = false;
-            delete result;
-        }
-        s_widget_fetch_busy = false;
-        vTaskDelete(nullptr);
     }
 
     static const char *JsonText(cJSON *object, const char *name, const char *fallback)
@@ -1759,6 +1635,22 @@ private:
         RenderWindow(cJSON_GetObjectItemCaseSensitive(root, "weekly"),
                      weekly_percent_, weekly_reset_, weekly_bar_);
 
+        cJSON *full_reset = cJSON_GetObjectItemCaseSensitive(root, "full_reset");
+        if (cJSON_IsObject(full_reset)) {
+            std::string title = VietnameseToAscii(JsonText(full_reset, "title", "Weekly + 5 hr"));
+            constexpr const char *prefix = "Full reset (";
+            if (title.rfind(prefix, 0) == 0 && title.size() > std::strlen(prefix) && title.back() == ')') {
+                title = title.substr(std::strlen(prefix), title.size() - std::strlen(prefix) - 1);
+            }
+            cJSON *available = cJSON_GetObjectItemCaseSensitive(full_reset, "available");
+            if (!cJSON_IsTrue(available)) title = "Not available";
+            lv_label_set_text(reset_title_, title.c_str());
+            lv_label_set_text(reset_expiry_, cJSON_IsTrue(available)
+                ? JsonText(full_reset, "expires_label", "--") : "--");
+        } else {
+            lv_label_set_text(reset_title_, "Unknown");
+            lv_label_set_text(reset_expiry_, "--");
+        }
         cJSON *stale = cJSON_GetObjectItemCaseSensitive(root, "stale");
         const char *updated = JsonText(root, "updated_label", "--");
         char status[48];
@@ -1774,10 +1666,11 @@ private:
     lv_obj_t *weekly_percent_ = nullptr;
     lv_obj_t *weekly_reset_ = nullptr;
     lv_obj_t *weekly_bar_ = nullptr;
+    lv_obj_t *reset_title_ = nullptr;
+    lv_obj_t *reset_expiry_ = nullptr;
     lv_obj_t *status_ = nullptr;
     lv_timer_t *refresh_timer_ = nullptr;
     std::atomic<bool> refresh_running_{false};
-    bool deferred_force_ = false;
     bool visible_ = false;
 };
 
@@ -1843,6 +1736,12 @@ public:
     {
         if (requested_app == "man-utd") active_view_ = View::ManchesterUnited;
         else if (requested_app == "codex-credit") active_view_ = View::CodexCredit;
+    }
+
+    void OnRemoteData(const char *resource, bool ok)
+    {
+        if (strcmp(resource, "football") == 0) man_utd_.OnRemoteData(ok);
+        else if (strcmp(resource, "codex") == 0) codex_credit_.OnRemoteData(ok);
     }
 
 private:
@@ -2599,6 +2498,62 @@ bool AppManager::RequestWallpaperSync()
         return false;
     }
     return true;
+}
+
+void AppManager::UpdateTrackingData(const char *resource, const char *json, bool ok)
+{
+    if (resource == nullptr ||
+        (strcmp(resource, "football") != 0 && strcmp(resource, "codex") != 0)) return;
+
+    const char *path = strcmp(resource, "football") == 0
+        ? "/littlefs/manutd_schedule.json" : "/littlefs/codex_usage.json";
+    const char *temp_path = strcmp(resource, "football") == 0
+        ? "/littlefs/manutd_schedule.tmp" : "/littlefs/codex_usage.tmp";
+    bool stored = false;
+    if (ok && json != nullptr) {
+        const size_t size = strlen(json);
+        const size_t limit = strcmp(resource, "football") == 0 ? 16384U : 8192U;
+        if (size > 0 && size <= limit) {
+            FILE *fp = std::fopen(temp_path, "wb");
+            if (fp != nullptr) {
+                stored = std::fwrite(json, 1, size, fp) == size;
+                std::fclose(fp);
+                if (stored) {
+                    std::remove(path);
+                    stored = std::rename(temp_path, path) == 0;
+                } else {
+                    std::remove(temp_path);
+                }
+            }
+        }
+    }
+    ESP_LOGI("tracking", "%s data update %s over voice WebSocket",
+             resource, stored ? "stored" : "failed");
+
+    struct PendingUpdate {
+        AppManager *manager;
+        char resource[12];
+        bool ok;
+    };
+    auto *update = new PendingUpdate{this, {}, stored};
+    std::snprintf(update->resource, sizeof(update->resource), "%s", resource);
+    if (lv_async_call([](void *value) {
+            auto *pending = static_cast<PendingUpdate *>(value);
+            for (size_t index = 0; index < pending->manager->app_count_; ++index) {
+                AppEntry &entry = pending->manager->apps_[index];
+                if (strcmp(entry.app->Id(), "tracking-status") == 0 && entry.created) {
+                    static_cast<TrackingStatusApp *>(entry.app)->OnRemoteData(
+                        pending->resource, pending->ok);
+                    break;
+                }
+            }
+            AddSystemLog(pending->ok ? "INFO" : "WARN", "tracking",
+                         "%s data update %s over voice WebSocket", pending->resource,
+                         pending->ok ? "stored" : "failed");
+            delete pending;
+        }, update) != LV_RES_OK) {
+        delete update;
+    }
 }
 
 void AppManager::ShowNextHomePage()

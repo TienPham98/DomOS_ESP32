@@ -70,3 +70,17 @@ set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults;${DOMOS_PRI
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(domos_firmware)
+
+# esp_audio_codec 2.5.0 links its prebuilt archives through a raw `-L path`
+# option. GNU ld splits that option when a Windows checkout path contains a
+# space. Replace only that component's private link list with quoted archive
+# filenames after ESP-IDF has registered all component targets.
+if(TARGET __idf_espressif__esp_audio_codec)
+    idf_component_get_property(DOMOS_AUDIO_CODEC_DIR espressif__esp_audio_codec COMPONENT_DIR)
+    set_property(TARGET __idf_espressif__esp_audio_codec PROPERTY LINK_LIBRARIES "")
+    set_property(TARGET __idf_espressif__esp_audio_codec PROPERTY INTERFACE_LINK_LIBRARIES "")
+    target_link_libraries(__idf_espressif__esp_audio_codec PRIVATE
+        "${DOMOS_AUDIO_CODEC_DIR}/lib/${CONFIG_IDF_TARGET}/libesp_audio_simple_dec.a"
+        "${DOMOS_AUDIO_CODEC_DIR}/lib/${CONFIG_IDF_TARGET}/libesp_audio_codec.a"
+    )
+endif()

@@ -23,6 +23,9 @@ public:
                               const std::string &mode);
     bool RequestWallpaperUrl(const std::string &url, const std::string &name = "");
     bool RequestWallpaperSync();
+    // Persist and display app data received over the assistant WebSocket.
+    // Safe to call from the WebSocket client task.
+    void UpdateTrackingData(const char *resource, const char *json, bool ok);
     void CloseCurrent();
     void ShowNextHomePage();
     void ApplyClockSettings(const std::string &style, uint32_t color_hex, const std::string &mode = "");

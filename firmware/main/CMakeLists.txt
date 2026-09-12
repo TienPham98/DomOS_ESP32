@@ -17,6 +17,8 @@ idf_component_register(
         "services/filesystem/upload_server.cpp"
         "services/assistant/ws_client.cpp"
         "services/assistant/audio_pipeline.cpp"
+        "services/assistant/opus_encoder.cpp"
+        "services/assistant/speech_frontend.cpp"
         "services/assistant/assistant_service.cpp"
         "app/launcher/app_manager.cpp"
     INCLUDE_DIRS "."
@@ -25,4 +27,6 @@ idf_component_register(
         esp_lcd_ili9341 esp_driver_ledc littlefs lvgl mbedtls mqtt nvs_flash
         esp_websocket_client json
         esp_codec_dev
+        esp-sr
+        esp_audio_codec
 )

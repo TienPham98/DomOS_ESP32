@@ -14,6 +14,8 @@
 #include <functional>
 #include <atomic>
 #include <mutex>
+#include "speech_frontend.h"
+#include "opus_encoder.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -22,7 +24,7 @@
 class ES3C28PBoard;
 
 // Callback được gọi khi mic đọc được một chunk PCM đủ lớn
-using MicChunkCallback = std::function<void(const int16_t *pcm, size_t samples)>;
+using MicChunkCallback = std::function<void(const uint8_t *payload, size_t bytes)>;
 
 struct AudioPipelineConfig {
     // Kích thước mỗi chunk mic đọc (samples = 960 cho 60ms @ 16kHz)
@@ -33,6 +35,7 @@ struct AudioPipelineConfig {
     MicChunkCallback on_mic_data;
     // Runs on the network/uplink task, never on the real-time I2S tasks.
     std::function<void()> on_service_tick;
+    SpeechFrontendConfig frontend;
 };
 
 class AudioPipeline {
@@ -47,8 +50,11 @@ public:
     // Xóa output queue (dùng khi abort)
     void FlushOutput();
     bool IsOutputDrained();
+    bool IsMicInputDrained() const;
 
     bool IsRunning() const { return running_.load(); }
+    bool HasLocalSpeech() const { return frontend_.IsReady(); }
+    bool UsesOpus() const { return opus_encoder_.IsReady(); }
 
 private:
     static void MicTask(void *arg);
@@ -57,6 +63,8 @@ private:
 
     ES3C28PBoard       *board_  = nullptr;
     AudioPipelineConfig cfg_;
+    SpeechFrontend frontend_;
+    OpusEncoder opus_encoder_;
     std::atomic<bool>   running_{false};
     void               *output_queue_ = nullptr;  // QueueHandle_t
     void               *output_queue_storage_ = nullptr;
@@ -67,6 +75,7 @@ private:
     std::atomic<TaskHandle_t> mic_task_{nullptr};
     std::atomic<TaskHandle_t> uplink_task_{nullptr};
     std::atomic<TaskHandle_t> output_task_{nullptr};
+    std::atomic<uint32_t> mic_dropped_{0};
     std::mutex output_mutex_;
     bool output_in_flight_ = false;
     int64_t output_written_at_us_ = 0;

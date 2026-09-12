@@ -70,14 +70,15 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertIn("ws_.IsStarted() || GetState() != AssistantState::Idle", service)
         self.assertIn("channel_lock(channel_mutex_)", service)
 
-    def test_widget_fetches_share_internal_ram_budget_with_background_voice(self):
+    def test_tracking_data_reuses_voice_websocket_without_second_tls_stack(self):
         self.assertIn("CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y", read("sdkconfig.defaults"))
         manager = read("main/app/launcher/app_manager.cpp")
-        self.assertIn("std::atomic<bool> s_widget_fetch_busy{false}", manager)
-        self.assertEqual(manager.count("s_widget_fetch_busy.compare_exchange_strong"), 2)
-        self.assertEqual(manager.count("s_widget_fetch_busy = false;"), 4)
-        self.assertEqual(manager.count("deferred_force_ = deferred_force_ || force"), 2)
-        self.assertGreaterEqual(manager.count("lv_timer_set_period(refresh_timer_, 1000)"), 4)
+        service = read("main/services/assistant/assistant_service.cpp")
+        self.assertIn('assistant->RequestData("football", force)', manager)
+        self.assertIn('assistant->RequestData("codex", force)', manager)
+        self.assertIn('"type\\\":\\\"data', service)
+        self.assertNotIn('"manutd_fetch"', manager)
+        self.assertNotIn('"codex_fetch"', manager)
 
     def test_private_network_endpoints_are_injected(self):
         defaults = read("sdkconfig.defaults")
@@ -97,7 +98,8 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertIn("CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y", defaults)
         manager = read("main/app/launcher/app_manager.cpp")
         self.assertIn("kWidgetFetchStackBytes = 8192", manager)
-        self.assertIn("uxTaskGetStackHighWaterMark(nullptr)", manager)
+        self.assertIn('RequestData("football", force)', manager)
+        self.assertIn('RequestData("codex", force)', manager)
         for path in ("app/launcher/app_manager.cpp", "services/mqtt/mqtt_service.cpp",
                      "services/assistant/ws_client.cpp"):
             with self.subTest(path=path):
@@ -163,60 +165,56 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertIn("s_apps->RequestLaunch(app)", server)
         self.assertNotIn("s_apps->Launch(app)", server)
 
-    def test_manchester_united_app_keeps_network_work_off_realtime_tasks(self):
+    def test_manchester_united_app_uses_authenticated_voice_data_channel(self):
         manager = read("main/app/launcher/app_manager.cpp")
         assistant = read("main/services/assistant/assistant_service.cpp")
         upload_server = read("main/services/filesystem/upload_server.cpp")
 
         self.assertIn("class ManchesterUnitedApp", manager)
         self.assertIn('return "man-utd";', manager)
-        self.assertIn('"/api/football/manchester-united"', manager)
-        self.assertIn('"/api/football/manchester-united/background.jpg"', manager)
-        self.assertRegex(
-            manager,
-            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"manutd_fetch",\s*kWidgetFetchStackBytes,\s*context,\s*3,\s*nullptr,\s*0\)',
-        )
-        self.assertNotRegex(manager, r'xTaskCreatePinnedToCoreWithCaps\([^;]*"manutd_fetch"')
+        self.assertIn('RequestData("football", force)', manager)
+        self.assertIn('"/littlefs/manutd_schedule.json"', manager)
+        self.assertNotIn('"manutd_fetch"', manager)
         self.assertIn("60U * 60U * 1000U", manager)
         self.assertIn('cJSON_CreateString("man-utd")', assistant)
         self.assertIn('strcmp(app, "man-utd") != 0', assistant)
         self.assertIn('app = "man-utd"', upload_server)
 
-    def test_codex_credit_app_uses_gateway_and_background_fetch_task(self):
+    def test_codex_credit_app_uses_authenticated_voice_data_channel(self):
         manager = read("main/app/launcher/app_manager.cpp")
         assistant = read("main/services/assistant/assistant_service.cpp")
         upload_server = read("main/services/filesystem/upload_server.cpp")
 
         self.assertIn("class CodexCreditApp", manager)
         self.assertIn('return "codex-credit";', manager)
-        self.assertIn('"/api/codex/usage"', manager)
+        self.assertIn('RequestData("codex", force)', manager)
+        self.assertIn('"/littlefs/codex_usage.json"', manager)
         self.assertRegex(
             manager,
             r'percent\s*=\s*Label\(card,\s*"--% LEFT"[\s\S]*?&lv_font_montserrat_14\)',
         )
-        self.assertRegex(
-            manager,
-            r'xTaskCreatePinnedToCore\(\s*FetchTask,\s*"codex_fetch",\s*kWidgetFetchStackBytes,\s*context,\s*3,\s*nullptr,\s*0\)',
-        )
-        self.assertNotRegex(manager, r'xTaskCreatePinnedToCoreWithCaps\([^;]*"codex_fetch"')
+        self.assertNotIn('"codex_fetch"', manager)
         self.assertIn("60U * 1000U", manager)
         self.assertIn('cJSON_CreateString("codex-credit")', assistant)
         self.assertIn('strcmp(app, "codex-credit") != 0', assistant)
         self.assertIn('app = "codex-credit"', upload_server)
 
-    def test_codex_screen_only_shows_general_usage_windows(self):
+    def test_codex_screen_shows_usage_windows_and_full_reset(self):
         manager = read("main/app/launcher/app_manager.cpp")
         app = manager[manager.index("class CodexCreditApp"):manager.index("class DashboardApp")]
-        self.assertIn('"GENERAL USAGE LIMITS"', app)
-        self.assertIn('CreateWindowCard(32, "5 HOUR"', app)
-        self.assertIn('CreateWindowCard(111, "WEEKLY"', app)
-        self.assertIn("lv_obj_set_size(card, 308, 74)", app)
+        self.assertIn('"CODEX USAGE"', app)
+        self.assertIn('CreateWindowCard(6, "5 HOUR"', app)
+        self.assertIn('CreateWindowCard(163, "WEEKLY"', app)
+        self.assertIn("lv_obj_set_size(card, 151, 78)", app)
+        self.assertIn("lv_obj_set_size(reset_card, 308, 57)", app)
         self.assertIn('"remaining_percent"', app)
         self.assertIn('"resets_label"', app)
-        self.assertNotIn("full_reset", app)
-        self.assertNotIn("FULL RESET", app)
-        self.assertNotIn("reset_title_", app)
-        self.assertNotIn("reset_expiry_", app)
+        self.assertIn('"full_reset"', app)
+        self.assertIn('"FULL RESET"', app)
+        self.assertIn('"expires_label"', app)
+        self.assertIn('title = "Not available"', app)
+        self.assertIn('lv_label_set_text(reset_title_, "Unknown")', app)
+        self.assertIn('JsonText(full_reset, "expires_label", "--") : "--"', app)
 
 
 if __name__ == "__main__":

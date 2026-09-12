@@ -56,6 +56,9 @@ public:
     void SubmitSpeech();
     void ActivateListening();
     void CancelResponse();
+    // Request lightweight app data through the existing authenticated voice
+    // WebSocket. This avoids opening a second TLS connection on the board.
+    bool RequestData(const char *resource, bool force = false);
 
     AssistantState GetState() const { return static_cast<AssistantState>(state_.load()); }
     bool IsActive() const { return static_cast<AssistantState>(state_.load()) != AssistantState::Idle; }
@@ -81,6 +84,7 @@ private:
     void HandleLlm(const char *json);
     void HandleTts(const char *json);
     void HandleMcp(const char *json);
+    void HandleData(const char *json);
     void HandleSystem(const char *json);
     void HandleAlert(const char *json);
 
@@ -95,6 +99,7 @@ private:
 
     void NotifyUi();
     void FinishPlaybackIfDrained();
+    void ProcessLocalSpeechEvents();
 
     ES3C28PBoard          *board_   = nullptr;
     AppManager            *apps_    = nullptr;
@@ -108,6 +113,12 @@ private:
     std::atomic<bool> handshake_done_{false};
     std::atomic<bool> tts_active_{false};
     std::atomic<bool> response_aborted_{false};
+    // Pending values encode generation + 1; zero means no event. Stale events
+    // after Cancel/reconnect cannot trigger a new listening session.
+    std::atomic<uint32_t> speech_generation_{0};
+    std::atomic<uint32_t> local_wake_pending_{0};
+    std::atomic<uint32_t> local_end_pending_{0};
+    std::atomic<bool> local_vad_negotiated_{false};
     std::mutex playback_mutex_;
     bool playback_finishing_ = false;
     AssistantState after_playback_ = AssistantState::Armed;

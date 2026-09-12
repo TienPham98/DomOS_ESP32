@@ -45,15 +45,35 @@ bool AssistantService::Start(ES3C28PBoard *board, EventBus *events, const Assist
     // Hold 720 ms of cloud TTS so ordinary Wi-Fi/WebSocket jitter cannot
     // starve the real-time I2S output task between 60 ms PCM frames.
     pipe_cfg.output_queue_depth = 12;
-    pipe_cfg.on_service_tick = [this]() { FinishPlaybackIfDrained(); };
-    pipe_cfg.on_mic_data = [this](const int16_t *pcm, size_t samples) {
+    pipe_cfg.on_service_tick = [this]() {
+        FinishPlaybackIfDrained();
+        ProcessLocalSpeechEvents();
+    };
+    pipe_cfg.frontend.context = [this]() {
+        const auto state = GetState();
+        SpeechMode mode = SpeechMode::Disabled;
+        if (handshake_done_.load()) {
+            if (state == AssistantState::Armed) mode = SpeechMode::Armed;
+            if (state == AssistantState::Listening) mode = SpeechMode::Listening;
+        }
+        return SpeechContext{mode, speech_generation_.load()};
+    };
+    pipe_cfg.frontend.on_wake = [this](uint32_t generation) {
+        local_wake_pending_.store(generation + 1);
+    };
+    pipe_cfg.frontend.on_speech_end = [this](uint32_t generation) {
+        local_end_pending_.store(generation + 1);
+    };
+    pipe_cfg.on_mic_data = [this](const uint8_t *payload, size_t bytes) {
         // Only stream audio once handshake is complete
-        // With AEC disabled, uploading the microphone while the speaker is
-        // active would make Dom interrupt itself. Capture only while listening.
+        // With AEC disabled, never upload while speaking. When ESP-SR is ready,
+        // Armed audio remains local; legacy cloud wake is retained only if
+        // the model failed to initialize.
         const AssistantState state = this->GetState();
         if (this->handshake_done_.load() &&
-            (state == AssistantState::Armed || state == AssistantState::Listening)) {
-            this->ws_.SendBinary(reinterpret_cast<const uint8_t *>(pcm), samples * sizeof(int16_t));
+            (state == AssistantState::Listening ||
+             (state == AssistantState::Armed && !pipeline_.HasLocalSpeech()))) {
+            this->ws_.SendBinary(payload, bytes);
         }
     };
 
@@ -256,6 +276,7 @@ void AssistantService::OnWsText(const char *data, size_t /*len*/)
     else if (strcmp(type, "llm")    == 0) HandleLlm(data);
     else if (strcmp(type, "tts")    == 0) HandleTts(data);
     else if (strcmp(type, "mcp")    == 0) HandleMcp(data);
+    else if (strcmp(type, "data")   == 0) HandleData(data);
     else if (strcmp(type, "system") == 0) HandleSystem(data);
     else if (strcmp(type, "alert")  == 0) HandleAlert(data);
 
@@ -301,14 +322,35 @@ void AssistantService::FinishPlaybackIfDrained()
 
 // ─── Protocol Senders ────────────────────────────────────────────────────────
 
+void AssistantService::ProcessLocalSpeechEvents()
+{
+    const uint32_t wake = local_wake_pending_.exchange(0);
+    if (wake != 0 && wake == speech_generation_.load() + 1 &&
+        handshake_done_.load() && GetState() == AssistantState::Armed) {
+        if (events_) events_->Publish(EventType::AppLaunchRequested, TAG, "assistant");
+        ActivateListening();
+    }
+    const uint32_t end = local_end_pending_.exchange(0);
+    if (end != 0 && end == speech_generation_.load() + 1 &&
+        local_vad_negotiated_.load() && GetState() == AssistantState::Listening) {
+        if (!pipeline_.IsMicInputDrained()) {
+            local_end_pending_.store(end);
+            return;
+        }
+        SubmitSpeech();
+    }
+}
+
 void AssistantService::SendHello()
 {
-    char json[256];
+    char json[320];
     snprintf(json, sizeof(json),
              "{\"type\":\"hello\",\"version\":3,"
-             "\"features\":{\"mcp\":true,\"aec\":false,\"vad\":true},"
-             "\"audio_params\":{\"codec\":\"pcm\",\"sample_rate\":16000,"
-             "\"channels\":1,\"frame_duration\":60}}");
+             "\"features\":{\"mcp\":true,\"aec\":false,\"vad\":true,\"local_vad\":%s},"
+             "\"audio_params\":{\"codec\":\"%s\",\"sample_rate\":16000,"
+             "\"channels\":1,\"frame_duration\":60}}",
+             pipeline_.HasLocalSpeech() ? "true" : "false",
+             pipeline_.UsesOpus() ? "opus" : "pcm");
     ws_.SendText(json);
 }
 
@@ -403,6 +445,18 @@ void AssistantService::SendMcpResult(int req_id, const char *text, bool is_error
     cJSON_Delete(root);
 }
 
+bool AssistantService::RequestData(const char *resource, bool force)
+{
+    if (!handshake_done_.load() || resource == nullptr || resource[0] == '\0') return false;
+    if (strcmp(resource, "football") != 0 && strcmp(resource, "codex") != 0) return false;
+
+    char json[96];
+    snprintf(json, sizeof(json),
+             "{\"type\":\"data\",\"resource\":\"%s\",\"force\":%s}",
+             resource, force ? "true" : "false");
+    return ws_.SendText(json);
+}
+
 // ─── Protocol Handlers ────────────────────────────────────────────────────────
 
 void AssistantService::HandleHello(const char *json)
@@ -414,6 +468,12 @@ void AssistantService::HandleHello(const char *json)
     if (sid && cJSON_IsString(sid)) {
         ESP_LOGI(TAG, "Dom AI session established: %s", sid->valuestring);
     }
+    cJSON *features = cJSON_GetObjectItemCaseSensitive(root, "features");
+    local_vad_negotiated_.store(pipeline_.HasLocalSpeech() &&
+        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(features, "local_vad")));
+    ESP_LOGI(TAG, "Local speech=%s, device VAD negotiated=%s",
+             pipeline_.HasLocalSpeech() ? "ready" : "unavailable",
+             local_vad_negotiated_.load() ? "yes" : "no");
     cJSON_Delete(root);
 
     handshake_done_.store(true);
@@ -892,6 +952,26 @@ void AssistantService::HandleMcp(const char *json)
     cJSON_Delete(root);
 }
 
+void AssistantService::HandleData(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (!root) return;
+
+    cJSON *resource_j = cJSON_GetObjectItemCaseSensitive(root, "resource");
+    cJSON *ok_j = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+    const char *resource = cJSON_IsString(resource_j) ? resource_j->valuestring : "";
+    const bool ok = cJSON_IsTrue(ok_j) && cJSON_IsObject(payload);
+
+    char *payload_json = ok ? cJSON_PrintUnformatted(payload) : nullptr;
+    if (apps_ != nullptr &&
+        (strcmp(resource, "football") == 0 || strcmp(resource, "codex") == 0)) {
+        apps_->UpdateTrackingData(resource, payload_json, ok && payload_json != nullptr);
+    }
+    if (payload_json != nullptr) cJSON_free(payload_json);
+    cJSON_Delete(root);
+}
+
 void AssistantService::HandleSystem(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
@@ -922,7 +1002,9 @@ void AssistantService::SetState(AssistantState s)
     const auto previous = static_cast<AssistantState>(
         state_.exchange(static_cast<uint8_t>(s))
     );
-    if (previous == s || events_ == nullptr) return;
+    if (previous == s) return;
+    speech_generation_.fetch_add(1);
+    if (events_ == nullptr) return;
 
     const char *name = "idle";
     switch (s) {

@@ -2,10 +2,12 @@
 
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
 
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 
 static const char *TAG = "ws_client";
@@ -29,7 +31,9 @@ bool WsClient::Connect(const WsClientConfig &cfg)
         return false;
     }
     ws_cfg.uri                  = cfg.uri;
-    ws_cfg.buffer_size          = 2048;  // One 1920-byte / 60 ms PCM frame plus WS header
+    // Opus uplink packets and 1920-byte PCM downlink frames fit in this buffer.
+    // Dynamic component buffers preserve scarce idle DRAM between messages.
+    ws_cfg.buffer_size          = 2048;
     ws_cfg.task_stack           = 4096;
     ws_cfg.reconnect_timeout_ms = cfg.reconnect_ms > 0 ? cfg.reconnect_ms : 3000;
     // A cloud rolling deployment closes sockets cleanly (e.g. code 1012),
@@ -130,11 +134,26 @@ bool WsClient::SendText(const char *json, size_t len)
 bool WsClient::SendBinary(const uint8_t *data, size_t len)
 {
     if (!connected_.load() || client_ == nullptr) return false;
+    const int64_t started = esp_timer_get_time();
     int ret = esp_websocket_client_send_bin(
         static_cast<esp_websocket_client_handle_t>(client_),
         reinterpret_cast<const char *>(data), static_cast<int>(len), pdMS_TO_TICKS(2000)
     );
-    return ret > 0;
+    const int64_t elapsed = esp_timer_get_time() - started;
+    static uint32_t sends = 0;
+    static int64_t total_us = 0;
+    static int64_t max_us = 0;
+    ++sends;
+    total_us += elapsed;
+    max_us = std::max(max_us, elapsed);
+    if (ret != static_cast<int>(len)) {
+        ESP_LOGW(TAG, "Binary frame send incomplete (len=%u ret=%d elapsed=%lldms)",
+                 static_cast<unsigned>(len), ret, elapsed / 1000);
+    } else if (sends % 16 == 0) {
+        ESP_LOGI(TAG, "Audio uplink avg=%lldms max=%lldms payload=%u",
+                 total_us / sends / 1000, max_us / 1000, static_cast<unsigned>(len));
+    }
+    return ret == static_cast<int>(len);
 }
 
 // ─── Event Handler ────────────────────────────────────────────────────────────

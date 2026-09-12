@@ -80,4 +80,43 @@ config DOMOS_AI_AUTH_TOKEN
         Optional Bearer token for authenticating the device to the AI Gateway.
         Leave empty if authentication is not configured.
 
+config DOMOS_ESP_SR
+    bool "ESP-SR microphone front-end and local Hey Dom recognition"
+    default y
+    depends on IDF_TARGET_ESP32S3 && SPIRAM
+    help
+        Enables VADNet with optional single-microphone noise suppression. MultiNet5
+        English recognizes Hey Dom as a custom phrase, not a trained WakeNet
+        model. Requires the model partition populated by the ESP-SR build.
+        AEC is intentionally disabled: the board exposes no synchronized
+        playback reference channel. Vietnamese STT and TTS remain cloud-side.
+
+config DOMOS_WAKE_THRESHOLD
+    int "Hey Dom MultiNet detection threshold (percent)"
+    depends on DOMOS_ESP_SR
+    range 1 99
+    default 20
+    help
+        Matches Xiaozhi's custom MultiNet default of 0.2. Higher values reduce
+        false wakes but can reject a short phrase spoken with a different accent.
+
+config DOMOS_SR_NOISE_SUPPRESSION
+    bool "Apply WebRTC noise suppression before local recognition"
+    depends on DOMOS_ESP_SR
+    default n
+    help
+        Optional AFE noise suppression. Keep disabled for the recognition-first
+        profile, matching Xiaozhi: NS can suppress quiet wake-word consonants.
+        Enable only after comparing recognition and false-wake rates on board.
+
+config DOMOS_SR_LINEAR_GAIN_PERCENT
+    int "MultiNet-only microphone gain (percent)"
+    depends on DOMOS_ESP_SR
+    range 100 1000
+    default 400
+    help
+        Scales only the frame passed to MultiNet. The ES3C28P microphone uses
+        its maximum codec gain but measured speech is quiet. The unscaled AFE
+        output is retained for VAD endpointing and cloud STT fallback.
+
 endmenu

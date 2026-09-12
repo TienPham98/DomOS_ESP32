@@ -1,6 +1,17 @@
 dependencies:
+  espressif/cjson:
+    component_hash:
+      e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.7.19~2
   espressif/cmake_utilities:
-    component_hash: 
+    component_hash:
       351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
     - name: idf
@@ -10,6 +21,62 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
+  espressif/dl_fft:
+    component_hash:
+      3e8f7d34e04bfa6333f289a6d126745bebe0cee9311b81a6a5d106047f63ef65
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.7.0
+  espressif/esp-dsp:
+    component_hash:
+      12e44db246517a627bc0fe2b255b8335410c0215c98bfba2df5a8e3edea839ef
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.2'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.8.0
+  espressif/esp-sr:
+    component_hash:
+      809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b
+    dependencies:
+    - name: espressif/cjson
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.7.19
+    - name: espressif/dl_fft
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=0.6.0'
+    - name: espressif/esp-dsp
+      registry_url: https://components.espressif.com
+      require: private
+      version: 1.8.0
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.4.7
+  espressif/esp_audio_codec:
+    component_hash:
+      16e2880dbdd5a72264051f750f33a6e5a38fd25621c83e3a32a85a152d2d2643
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.5.0
   espressif/esp_codec_dev:
     component_hash: 
       d67021bdb3f619cebabdfabd4507d978dfa5cddf3ae8db4752b23843cf2cc2d9
@@ -71,12 +138,14 @@ dependencies:
       type: service
     version: 8.4.0
 direct_dependencies:
+- espressif/esp-sr
+- espressif/esp_audio_codec
 - espressif/esp_codec_dev
 - espressif/esp_lcd_ili9341
 - espressif/esp_websocket_client
 - idf
 - joltwallet/littlefs
 - lvgl/lvgl
-manifest_hash: 9ea6d8043a4f436d8d74c767652a12505016faba745700c1605960eb0684193d
+manifest_hash: 80fa9bf81f524231ed6ac96192f3a7addb13dc0535ead491edec70f65c1d80c4
 target: esp32s3
 version: 2.0.0
